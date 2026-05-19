@@ -1,0 +1,30 @@
+id: tier4_focused
+description: "Heavy weighting on Tier-4 dual-feed power redundancy. Pitch posture: 99.995% uptime first, everything else after."
+
+weights:
+  power_redundancy:   0.50
+  water_proximity:    0.15
+  connectivity:       0.15
+  solar_potential:    0.05
+  climate:            0.05
+  latency:            0.10
+
+transforms:
+  power:
+    primary_decay_km:   10.0
+    secondary_decay_km: 20.0
+    secondary_weight:   0.5      # weight the distinct-subgrid leg even more
+  water:
+    decay_km: 10.0
+  connectivity:
+    highway_decay_km:  5.0
+  solar:
+    pvout_center: 1400
+    pvout_spread: 200
+  climate:
+    temp_low_c:  18
+    temp_high_c: 38
+  latency:
+    metro_decay_km:  100.0
+    cable_decay_km:  200.0
+    cable_weight:    0.5

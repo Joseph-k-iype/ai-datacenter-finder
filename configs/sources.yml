@@ -1,0 +1,108 @@
+# Canonical URIs + queries for all external data sources.
+# Edit here, not in code; ingest adapters resolve names against this file.
+
+gadm:
+  india_l1_states:
+    url: "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_IND_1.json"
+    license: "GADM Free for academic and other non-commercial use"
+
+osm_overpass:
+  power_lines_hv:
+    query: |
+      [out:json][timeout:{timeout}];
+      area["ISO3166-1"="IN"][admin_level=2]->.in;
+      (
+        way["power"="line"]["voltage"~"^(220|400|765|800)"](area.in);
+        way["power"="line"]["voltage"~"^[0-9]+$"](if: number(t["voltage"]) >= 220000)(area.in);
+      );
+      out body geom;
+  substations_hv:
+    query: |
+      [out:json][timeout:{timeout}];
+      area["ISO3166-1"="IN"][admin_level=2]->.in;
+      (
+        node["power"="substation"]["voltage"~"^(220|400|765|800)"](area.in);
+        way["power"="substation"]["voltage"~"^(220|400|765|800)"](area.in);
+      );
+      out center body;
+  highways:
+    query: |
+      [out:json][timeout:{timeout}];
+      area["ISO3166-1"="IN"][admin_level=2]->.in;
+      (
+        way["highway"~"^(motorway|trunk)$"](area.in);
+      );
+      out body geom;
+  railways:
+    query: |
+      [out:json][timeout:{timeout}];
+      area["ISO3166-1"="IN"][admin_level=2]->.in;
+      way["railway"="rail"]["service"!~"."](area.in);
+      out body geom;
+  water_bodies:
+    query: |
+      [out:json][timeout:{timeout}];
+      area["ISO3166-1"="IN"][admin_level=2]->.in;
+      (
+        relation["natural"="water"](area.in);
+        way["natural"="water"](area.in);
+        way["waterway"="river"](area.in);
+      );
+      out body geom;
+
+wdpa:
+  india_subset:
+    source: "WCMC/WDPA/current/polygons"   # via GEE; filter ISO3 = 'IND'
+    license: "UNEP-WCMC and IUCN, Protected Planet"
+
+cable_landings_in:
+  # Curated from TeleGeography / public submarine cable maps (as of 2026-Q1).
+  # Coordinates are approximate landing-station locations.
+  - name: "Mumbai (Versova)"
+    city: "Mumbai"
+    coords: [72.821, 19.139]
+    operators: ["Tata", "Reliance Jio", "Bharti Airtel"]
+    cables: ["SMW-3", "SMW-4", "SMW-5", "IMEWE", "EIG", "FALCON", "i2i", "GIB", "MENA"]
+  - name: "Chennai"
+    city: "Chennai"
+    coords: [80.275, 13.083]
+    operators: ["Tata", "Bharti Airtel", "Reliance Jio"]
+    cables: ["SMW-4", "BBG", "i2i", "TIC", "MENA"]
+  - name: "Tuticorin"
+    city: "Tuticorin"
+    coords: [78.135, 8.789]
+    operators: ["Bharti Airtel"]
+    cables: ["i2i extensions", "EIG"]
+  - name: "Kochi"
+    city: "Kochi"
+    coords: [76.236, 9.982]
+    operators: ["Tata", "Reliance Jio"]
+    cables: ["IMEWE", "SAEx2"]
+  - name: "Trivandrum"
+    city: "Thiruvananthapuram"
+    coords: [76.928, 8.524]
+    operators: ["Tata"]
+    cables: ["SMW-3", "SAFE"]
+  - name: "Visakhapatnam"
+    city: "Visakhapatnam"
+    coords: [83.293, 17.692]
+    operators: ["Tata", "Bharti Airtel"]
+    cables: ["BBG", "MENA-1"]
+  - name: "Digha"
+    city: "Digha"
+    coords: [87.516, 21.624]
+    operators: ["Tata"]
+    cables: ["SMW-4 spur"]
+
+metros_in:
+  # Top demand-anchor metros (Census 2011 + 2024 estimates).
+  - { name: "Mumbai",      population: 21000000, state_code: "MH", coords: [72.877, 19.076] }
+  - { name: "Delhi",       population: 32000000, state_code: "DL", coords: [77.209, 28.614] }
+  - { name: "Bengaluru",   population: 13600000, state_code: "KA", coords: [77.594, 12.972] }
+  - { name: "Hyderabad",   population: 10500000, state_code: "TG", coords: [78.486, 17.385] }
+  - { name: "Chennai",     population: 11500000, state_code: "TN", coords: [80.270, 13.083] }
+  - { name: "Pune",        population:  7400000, state_code: "MH", coords: [73.856, 18.520] }
+  - { name: "Kolkata",     population: 15000000, state_code: "WB", coords: [88.363, 22.572] }
+  - { name: "Ahmedabad",   population:  8400000, state_code: "GJ", coords: [72.581, 23.025] }
+  - { name: "Jaipur",      population:  4000000, state_code: "RJ", coords: [75.787, 26.912] }
+  - { name: "Lucknow",     population:  3500000, state_code: "UP", coords: [80.946, 26.846] }

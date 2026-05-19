@@ -1,0 +1,30 @@
+id: green_focused
+description: "Solar/climate-heavy. Pitch posture: net-zero AI training campus, captive renewable offset."
+
+weights:
+  power_redundancy:   0.20
+  water_proximity:    0.15
+  connectivity:       0.10
+  solar_potential:    0.30
+  climate:            0.15
+  latency:            0.10
+
+transforms:
+  power:
+    primary_decay_km:   20.0
+    secondary_decay_km: 40.0
+    secondary_weight:   0.4
+  water:
+    decay_km: 10.0
+  connectivity:
+    highway_decay_km:  5.0
+  solar:
+    pvout_center: 1500           # demand higher PVOUT for full credit
+    pvout_spread: 150
+  climate:
+    temp_low_c:  16
+    temp_high_c: 32
+  latency:
+    metro_decay_km:  150.0
+    cable_decay_km:  250.0
+    cable_weight:    0.4

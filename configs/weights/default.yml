@@ -1,0 +1,34 @@
+# Default scoring weights. Each weight in [0,1]; weights re-normalized to sum=1 at score time.
+# UI sliders bind to these names. Override per-pitch by copying to weights/<name>.yml.
+
+id: default
+description: "Balanced default weights for general Tier-4 AI data-center siting."
+
+weights:
+  power_redundancy:   0.30      # dual-feed grid access (THE Tier-4 metric)
+  water_proximity:    0.15      # cooling availability
+  connectivity:       0.15      # highway-proxy for dark fiber RoW
+  solar_potential:    0.10      # captive solar offset capability
+  climate:            0.10      # cooling efficiency (cooler = cheaper PUE)
+  latency:            0.20      # proximity to metros + cable landings
+
+# Transform parameters (see app/scoring/transforms.py)
+transforms:
+  power:
+    primary_decay_km:   15.0    # exp(-d/15)
+    secondary_decay_km: 30.0    # decay for distinct-subgrid 2nd line
+    secondary_weight:   0.4     # within power_redundancy
+  water:
+    decay_km: 10.0
+  connectivity:
+    highway_decay_km:  5.0
+  solar:
+    pvout_center: 1400          # kWh/kWp/yr midpoint of sigmoid
+    pvout_spread: 200
+  climate:
+    temp_low_c:  18             # below this is "perfect" (1.0)
+    temp_high_c: 38             # above this is 0
+  latency:
+    metro_decay_km:  100.0
+    cable_decay_km:  200.0
+    cable_weight:    0.5        # within latency

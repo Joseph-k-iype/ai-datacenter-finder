@@ -1,0 +1,59 @@
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.python-version
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg
+
+# Data (raw and intermediate snapshots)
+data/raw/
+data/interim/
+data/processed/
+data/cache/
+*.geojson
+*.tif
+*.tiff
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.zip
+!tests/fixtures/**/*.geojson
+!tests/fixtures/**/*.tif
+
+# Jupyter
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+postgres-data/
+
+# GEE / GCS credentials
+*service-account*.json
+*credentials*.json

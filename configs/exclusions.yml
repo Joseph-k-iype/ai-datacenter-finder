@@ -1,0 +1,30 @@
+# Hard-exclusion thresholds. A cell is excluded if ANY rule fires.
+# These are the Tier-4 site eligibility gates — failing any one of these
+# disqualifies the cell regardless of other merits.
+
+seismic:
+  # Exclude BIS Zone V (PGA > 0.36g). Zone IV (>0.24g) penalized in scoring, not excluded.
+  exclude_pga_g_gt: 0.36
+
+flood:
+  # JRC Global Surface Water "occurrence" — % of months with surface water 1984–present.
+  # Anything > 25% = recurring inundation.
+  exclude_occurrence_pct_gt: 25.0
+
+slope:
+  # Datacenter slabs need <10° gradient for cost-effective grading.
+  exclude_max_slope_deg_gt: 10.0
+
+landcover:
+  exclude_urban_pct_gt: 70.0        # already dense city, no room to build
+  exclude_forest_pct_gt: 60.0       # deforestation legal & political risk
+  exclude_wetland_pct_gt: 30.0
+  exclude_water_pct_gt:  50.0       # the cell is mostly a lake/sea
+
+protected_areas:
+  # Anything intersecting WDPA polygon = excluded.
+  exclude_in_wdpa: true
+
+coastline:
+  # CRZ-I proxy: within 500m of coastline is a regulatory red zone in India.
+  exclude_within_km: 0.5
