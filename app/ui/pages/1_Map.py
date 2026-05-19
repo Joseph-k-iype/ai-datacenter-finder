@@ -46,7 +46,7 @@ def load_hex_scores(run_id: str, state_code: str | None = None) -> pd.DataFrame:
     from sqlalchemy import text
 
     sql = """
-        SELECT h3_to_string(s.h3_id) AS h3_id,
+        SELECT s.h3_id::text AS h3_id,
                c.state_code,
                s.score,
                ST_X(ST_Centroid(g.geom)) AS lon,

@@ -48,7 +48,7 @@ def select_top_sites(
         rows = session.execute(
             text(
                 f"""
-                SELECT h3_to_string(s.h3_id) AS h3_id, c.state_code, s.score,
+                SELECT s.h3_id::text AS h3_id, c.state_code, s.score,
                        ST_X(ST_Centroid(g.geom)) AS lon,
                        ST_Y(ST_Centroid(g.geom)) AS lat
                 FROM dc_india.{scores} s

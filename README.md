@@ -80,6 +80,7 @@ GIS project per state. **This software collapses it to 30 seconds, country-wide.
 ```bash
 # 1. One-time setup
 cp .env.example .env                    # fill GEE SA JSON path, GCS bucket, PG password
+make gee-auth                           # if using user OAuth instead of a service account
 docker compose up -d                    # PostGIS + h3-pg + pgAdmin (3–5 min first build)
 uv sync --extra dev                     # install Python deps
 

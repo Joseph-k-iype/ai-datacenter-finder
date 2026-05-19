@@ -70,7 +70,7 @@ def centroid_lookup(h3_ids: tuple[str, ...]) -> pd.DataFrame:
         rows = session.execute(
             text(
                 """
-                SELECT h3_to_string(h3_id) AS h3_id,
+                SELECT h3_id::text AS h3_id,
                        ST_X(ST_Centroid(geom)) AS lon,
                        ST_Y(ST_Centroid(geom)) AS lat
                 FROM dc_india.h3_cells_res7

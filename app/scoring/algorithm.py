@@ -44,7 +44,7 @@ def _load_features(resolution: int) -> pd.DataFrame:
     sql = text(
         f"""
         SELECT
-            h3_to_string(h3_id) AS h3_id,
+            h3_id::text AS h3_id,
             state_code,
             nearest_hv_line_km,
             nearest_hv_line_distinct_subgrid_km,

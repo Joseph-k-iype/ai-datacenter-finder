@@ -20,7 +20,7 @@ def load_features_df(resolution: int = 7) -> pd.DataFrame:
     sql = text(
         f"""
         SELECT
-            h3_to_string(h3_id) AS h3_id,
+            h3_id::text AS h3_id,
             state_code,
             is_excluded,
             exclusion_reasons,
@@ -68,7 +68,7 @@ def load_top_sites(score_run_id: str | None = None) -> pd.DataFrame:
             return pd.DataFrame()
     sql = text(
         """
-        SELECT h3_to_string(h3_id) AS h3_id,
+        SELECT h3_id::text AS h3_id,
                state_code, rank, score,
                ST_X(centroid) AS lon, ST_Y(centroid) AS lat
         FROM dc_india.top_sites_res7

@@ -1,4 +1,4 @@
-.PHONY: help install up down init-db build-grid push-grid-to-gee \
+.PHONY: help install up down init-db build-grid gee-auth push-grid-to-gee \
         ingest-all ingest-gee ingest-osm ingest-wdpa ingest-static \
         validate compute-features score-default serve \
         test test-unit test-integration lint format clean
@@ -27,8 +27,11 @@ init-db: ## Apply migrations (idempotent; auto-runs on container first init)
 build-grid: ## Populate h3_cells_res{6,7,8} from GADM India
 	$(DC) grid build --res 6 --res 7 --res 8
 
+gee-auth: ## Authenticate Google Earth Engine user credentials
+	uv run earthengine authenticate --auth_mode=localhost:0 --force
+
 push-grid-to-gee: ## Upload h3 cells as a GEE FeatureCollection asset (one-time)
-	$(DC) grid push-to-gee --res 7
+	$(DC) grid push-to-gee --res 7 --chunk-size 5000
 
 ingest-gee: ## Ingest all GEE raster layers (zonal stats per cell)
 	$(DC) ingest gee --layer seismic

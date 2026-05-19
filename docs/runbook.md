@@ -11,7 +11,7 @@ under 2 hours of wall time (~60 min unattended GEE export wait).
 - A Google Cloud project with:
   - Earth Engine API enabled (`earthengine-api`)
   - A GCS bucket the EE service account can write to
-  - Service-account JSON key downloaded locally
+  - Either user Earth Engine credentials or a service-account JSON key downloaded locally
 
 ## Step-by-step
 
@@ -20,10 +20,13 @@ under 2 hours of wall time (~60 min unattended GEE export wait).
 cp .env.example .env
 $EDITOR .env
 # Set:
-#   GEE_SERVICE_ACCOUNT_JSON  → path to your SA key
-#   GEE_PROJECT               → your GCP project ID
+#   GEE_SERVICE_ACCOUNT_JSON  → optional path to your SA key
+#   GEE_PROJECT               → your GCP project ID, not your email address
 #   GCS_BUCKET                → your bucket name
 #   PG_PASSWORD               → a strong password
+
+# If using your own Google login instead of a service account:
+make gee-auth                  # choose your Earth Engine-enabled Google account
 
 # 2. Bring up Postgres
 make up                       # ~3 min first time (builds h3-pg)

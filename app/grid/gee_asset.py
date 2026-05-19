@@ -32,7 +32,7 @@ def _fetch_cells_for_asset(resolution: int) -> list[tuple[str, float, float, str
     table = f"h3_cells_res{resolution}"
     sql = text(
         f"""
-        SELECT h3_to_string(h3_id) AS h3_id,
+        SELECT h3_id::text AS h3_id,
                ST_X(ST_Centroid(geom)) AS lon,
                ST_Y(ST_Centroid(geom)) AS lat,
                ST_AsText(geom) AS wkt
