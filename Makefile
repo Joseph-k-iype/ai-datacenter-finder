@@ -4,7 +4,7 @@
         test test-unit test-integration lint format clean
 
 PYTHON ?= python
-DC ?= uv run dc
+DC ?= uv run python -m app.cli
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-22s %s\n", $$1, $$2}'

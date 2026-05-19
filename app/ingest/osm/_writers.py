@@ -65,7 +65,7 @@ def insert_rows(table: str, rows: list[dict[str, Any]], *, chunk_size: int = 500
     if not rows:
         return 0
 
-    cols = [c for c in rows[0].keys()]
+    cols = list(rows[0])
     if "wkt" not in cols or "ingestion_run_id" not in cols:
         raise ValueError("rows must contain 'wkt' and 'ingestion_run_id'")
 

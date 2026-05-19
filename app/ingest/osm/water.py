@@ -27,14 +27,13 @@ def _element_to_wkt(el: dict[str, Any]) -> tuple[str, str] | None:
         if coords[0] == coords[-1] and len(coords) >= 4:
             return Polygon(coords).wkt, _classify_kind(tags)
         return LineString(coords).wkt, _classify_kind(tags)
-    if el.get("type") == "relation":
-        # We accept relations only if Overpass returned center, treat as point lake.
-        if "center" in el:
-            lon, lat = el["center"]["lon"], el["center"]["lat"]
-            # Buffer the centroid by ~250m to get a stand-in polygon.
-            return Polygon([(lon - 0.0025, lat - 0.0025), (lon + 0.0025, lat - 0.0025),
-                            (lon + 0.0025, lat + 0.0025), (lon - 0.0025, lat + 0.0025),
-                            (lon - 0.0025, lat - 0.0025)]).wkt, _classify_kind(tags)
+    # Relations: accept only when Overpass returned a center, treat as a small polygon.
+    if el.get("type") == "relation" and "center" in el:
+        lon, lat = el["center"]["lon"], el["center"]["lat"]
+        # Buffer the centroid by ~250m to get a stand-in polygon.
+        return Polygon([(lon - 0.0025, lat - 0.0025), (lon + 0.0025, lat - 0.0025),
+                        (lon + 0.0025, lat + 0.0025), (lon - 0.0025, lat + 0.0025),
+                        (lon - 0.0025, lat - 0.0025)]).wkt, _classify_kind(tags)
     return None
 
 

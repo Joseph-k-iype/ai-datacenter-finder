@@ -16,11 +16,7 @@ def test_migrations_apply_clean(pg_container):
     """
     from sqlalchemy import create_engine, text
 
-    url = (
-        f"postgresql+psycopg://dc:test@"
-        f"{pg_container.get_container_host_ip()}:"
-        f"{pg_container.get_exposed_port(5432)}/dc_india"
-    )
+    url = pg_container.get_connection_url(driver="psycopg")
     engine = create_engine(url, future=True)
 
     with engine.begin() as conn:

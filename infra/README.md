@@ -77,7 +77,7 @@ Not implemented in PoC. Production checklist for the handoff:
 ## pgAdmin
 
 A `pgadmin` container runs alongside on :5050. Default credentials are
-in `docker-compose.yml` (admin@dc.local / admin). **Change these before
+in `docker-compose.yml` (admin@example.com / admin). **Change these before
 deploying anywhere reachable.**
 
 ## Smoke test

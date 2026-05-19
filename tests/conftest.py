@@ -17,10 +17,13 @@ def pg_container():
     from testcontainers.postgres import PostgresContainer
 
     container = (
-        PostgresContainer("postgis/postgis:16-3.4")
-        .with_env("POSTGRES_DB", "dc_india")
-        .with_env("POSTGRES_USER", "dc")
-        .with_env("POSTGRES_PASSWORD", "test")
+        PostgresContainer(
+            "postgis/postgis:16-3.4",
+            username="dc",
+            password="test",
+            dbname="dc_india",
+            driver="psycopg",
+        )
     )
     container.start()
     try:
