@@ -32,10 +32,6 @@ class Settings(BaseSettings):
     gee_service_account_json: str | None = None
     gee_project: str | None = None
 
-    # GCS
-    gcs_bucket: str | None = None
-    gcs_prefix: str = "ai-dc-india/exports"
-
     # App
     log_level: str = "INFO"
     log_format: str = "json"
@@ -60,12 +56,21 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def _replace_project(d: dict[str, Any], project: str) -> None:
+    for k, v in d.items():
+        if isinstance(v, str):
+            d[k] = v.replace("{project}", project)
+        elif isinstance(v, dict):
+            _replace_project(v, project)
+
 @lru_cache(maxsize=1)
 def load_pipeline_config() -> dict[str, Any]:
     settings = get_settings()
     path = PROJECT_ROOT / settings.pipeline_config
     with path.open("r") as f:
         cfg: dict[str, Any] = yaml.safe_load(f)
+    if settings.gee_project:
+        _replace_project(cfg, settings.gee_project)
     return cfg
 
 

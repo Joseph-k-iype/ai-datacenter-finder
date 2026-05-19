@@ -24,11 +24,11 @@ gee:
   # Asset IDs / sources
   india_h3_asset: "projects/{project}/assets/dc_india/h3_cells_res7"
   layers:
-    seismic:    "users/{project}/nasa_gshap_pga"   # uploaded once
+    seismic:    "projects/{project}/assets/nasa_gshap_pga"   # uploaded once
     flood:      "JRC/GSW1_4/GlobalSurfaceWater"
     slope:      "USGS/SRTMGL1_003"
     landcover:  "ESA/WorldCover/v200"
-    solar:      "users/{project}/global_solar_atlas_pvout"
+    solar:      "projects/{project}/assets/global_solar_atlas_pvout"
     climate:    "ECMWF/ERA5_LAND/MONTHLY"
     population: "WorldPop/GP/100m/pop"
     wdpa:       "WCMC/WDPA/current/polygons"
@@ -53,10 +53,11 @@ gee:
       country_iso3: "IND"
 
   export:
-    file_format: "CSV"     # GEE doesn't emit Parquet natively; we re-encode after readback
-    chunk_size: 5000       # cells per export job (FeatureCollection slice)
-    poll_seconds: 30
-    timeout_minutes: 90
+    # Cells per synchronous reduceRegions call. Keep small enough that
+    # the inline FeatureCollection payload stays under the 10 MB request
+    # cap. 2000 is a safe default for res-7 hexagons; raise for cheap
+    # reducers (mean only) or lower for heavy reducers (combine+percentile).
+    chunk_size: 2000
     tile_scale: 4          # raise to 8 or 16 on "Computed value too large"
 
 osm:

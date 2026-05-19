@@ -30,7 +30,7 @@ build-grid: ## Populate h3_cells_res{6,7,8} from GADM India
 gee-auth: ## Authenticate Google Earth Engine user credentials
 	uv run earthengine authenticate --auth_mode=localhost:0 --force
 
-push-grid-to-gee: ## Upload h3 cells as a GEE FeatureCollection asset (one-time)
+push-grid-to-gee: ## OPTIONAL: upload h3 cells to GEE as an asset (not used by default ingest)
 	$(DC) grid push-to-gee --res 7 --chunk-size 5000
 
 ingest-gee: ## Ingest all GEE raster layers (zonal stats per cell)

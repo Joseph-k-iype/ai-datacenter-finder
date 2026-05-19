@@ -1,17 +1,16 @@
 # Runbook — reproduce end-to-end
 
-Target: a teammate with this repo, a Google Cloud account with Earth
-Engine + a GCS bucket, and Docker, gets to a running Streamlit UI in
-under 2 hours of wall time (~60 min unattended GEE export wait).
+Target: a teammate with this repo, a Google Cloud project with Earth
+Engine enabled, and Docker, gets to a running Streamlit UI in under
+2 hours of wall time. **No GCS bucket required.**
 
 ## Prerequisites
 
 - Docker Desktop (Linux/Mac) or Docker Engine
 - `uv` (https://github.com/astral-sh/uv) for Python deps
-- A Google Cloud project with:
-  - Earth Engine API enabled (`earthengine-api`)
-  - A GCS bucket the EE service account can write to
-  - Either user Earth Engine credentials or a service-account JSON key downloaded locally
+- A Google Cloud project with **Earth Engine API enabled**.
+  - Either user Earth Engine credentials (`make gee-auth`) or a
+    service-account JSON key downloaded locally.
 
 ## Step-by-step
 
@@ -20,9 +19,8 @@ under 2 hours of wall time (~60 min unattended GEE export wait).
 cp .env.example .env
 $EDITOR .env
 # Set:
-#   GEE_SERVICE_ACCOUNT_JSON  → optional path to your SA key
+#   GEE_SERVICE_ACCOUNT_JSON  → optional path to your SA key (omit for user creds)
 #   GEE_PROJECT               → your GCP project ID, not your email address
-#   GCS_BUCKET                → your bucket name
 #   PG_PASSWORD               → a strong password
 
 # If using your own Google login instead of a service account:
@@ -39,13 +37,26 @@ make install                  # uv sync
 # 4. Build the grid
 make build-grid               # ~1 min for res 6+7
 
-# 5. Publish H3 cells as a GEE asset (one-time)
-make push-grid-to-gee         # kicks off async upload tasks
-# Wait for tasks to complete (see Earth Engine task manager).
-# Then optionally merge sub-assets into a single FeatureCollection
-# via `earthengine asset merge` if you want a single asset ID.
+# 5. (Optional) Upload custom raster assets for seismic + solar
+# These layers reference user-uploaded GEE assets; if absent, the pipeline:
+#   - SKIPS seismic (logs a warning; downstream treats all cells as NOT
+#     in Zone V — Himalayan cells may surface as eligible)
+#   - FALLS BACK to ERA5-derived PVOUT for solar (lower accuracy than GSA)
+#
+# Recommended uploads (one-time, requires staging files in a GCS bucket
+# briefly to call `earthengine upload`):
+#   earthengine upload image \
+#       --asset_id projects/<your-project>/assets/nasa_gshap_pga \
+#       gs://<your-bucket>/gshap_pga.tif
+#   earthengine upload image \
+#       --asset_id projects/<your-project>/assets/global_solar_atlas_pvout \
+#       gs://<your-bucket>/pvout_specific_lta.tif
+#
+# `make push-grid-to-gee` is no longer required — the default ingest
+# pipeline ships cells inline per chunk from Postgres. It's preserved as
+# an optional command for users who want the published-asset pattern.
 
-# 6. Ingest everything
+# 7. Ingest everything
 make ingest-all               # 30-60 min total
 # This runs:
 #   - 7 GEE zonal exports (poll asynchronously)
@@ -69,8 +80,15 @@ make serve                    # streamlit on :8501
 
 ## Common pitfalls
 
-- **"GEE export task FAILED — Computed value too large":** raise
-  `tileScale` in `app/ingest/gee/zonal_export.py` from 4 to 8 or 16.
+- **"Image asset 'projects/…/nasa_gshap_pga' not found":** you skipped
+  step 6. Either upload a GSHAP / BIS PGA raster to that asset path, or
+  let the pipeline skip seismic (it now does so cleanly with a warning).
+- **"Computed value too large" on a chunk:** raise
+  `gee.export.tile_scale` in `configs/pipeline.yml` from 4 to 8 or 16,
+  OR lower `gee.export.chunk_size` from 2000 to 1000.
+- **A chunk Parquet under `data/interim/gee/<layer>/` looks corrupt:**
+  delete it (or pass `--fresh` if/when wired) and re-run the layer; the
+  pipeline is resumable per chunk.
 - **"Overpass 429" loops:** the public Overpass endpoint rate-limits; the
   client backs off automatically (5 retries up to 2 min). If persistent,
   point `OVERPASS_URL` at a private/Kumi endpoint.

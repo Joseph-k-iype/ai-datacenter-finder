@@ -90,11 +90,17 @@ def grid_build(
 def grid_push_to_gee(
     res: int = typer.Option(7, "--res"),
     chunk_size: int = typer.Option(5000, "--chunk-size"),
+    wait: bool = typer.Option(
+        True, "--wait/--no-wait", help="Block until every upload task completes."
+    ),
 ) -> None:
-    """Upload H3 cells (centroids + IDs) as a GEE FeatureCollection asset."""
+    """Upload H3 cells (centroids + IDs) as a GEE FeatureCollection asset.
+
+    Sub-assets are auto-merged at ingest time — no manual merge step needed.
+    """
     from app.grid.gee_asset import push_cells_to_gee
 
-    asset_id = push_cells_to_gee(resolution=res, chunk_size=chunk_size)
+    asset_id = push_cells_to_gee(resolution=res, chunk_size=chunk_size, wait=wait)
     typer.echo(f"asset uploaded: {asset_id}")
 
 

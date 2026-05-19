@@ -22,10 +22,9 @@ dependencies = [
     "rasterio>=1.3.9",
     "fiona>=1.9.5",
 
-    # Earth Engine + GCS
+    # Earth Engine (no GCS — see app/ingest/gee/zonal_export.py for the
+    # local-disk chunked-sync pattern that replaced the old GCS roundtrip)
     "earthengine-api>=0.1.395",
-    "gcsfs>=2024.3.1",
-    "google-cloud-storage>=2.16.0",
 
     # OSM
     "osmnx>=1.9.2",

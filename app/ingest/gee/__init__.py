@@ -4,6 +4,9 @@ from __future__ import annotations
 
 def dispatch(layer: str, resolution: int = 7) -> int:
     """Route to the correct GEE ingest module."""
+    from app.ingest.gee.client import init_ee
+
+    init_ee()
     if layer == "seismic":
         from app.ingest.gee.seismic import ingest
 

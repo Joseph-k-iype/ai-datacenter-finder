@@ -1,31 +1,52 @@
-"""WDPA protected areas ingest via GEE.
+"""WDPA protected areas ingest via GEE — paginated synchronous fetch.
 
-WCMC/WDPA/current/polygons is the canonical FeatureCollection. We filter by
-ISO3='IND', then iterate features through GEE's task export (large
-geometries → too big to inline). Output written to ``raw_protected_areas``.
+We pull ``WCMC/WDPA/current/polygons`` filtered to ISO3='IND' (a few
+thousand polygons) using ``.toList(page_size, offset).getInfo()`` in
+small pages so each response stays well under the GEE 10 MB cap.
+
+No GCS, no async export, no service-account requirements beyond EE auth.
 """
 from __future__ import annotations
 
-import time
-import uuid
+import json as _json
 
 import ee
+import pandas as pd
+from shapely.geometry import shape
 
-from app.core.config import get_settings, load_pipeline_config
-from app.core.gcs import read_csv_glob
+from app.core.config import load_pipeline_config
+from app.core.logging import get_logger
 from app.governance.contracts import get_contract, schema_hash
 from app.governance.lineage import ingestion_run
 from app.ingest.base import validate_and_split
 from app.ingest.gee.client import init_ee
 from app.ingest.osm._writers import insert_rows, truncate
 
+log = get_logger("ingest.wdpa")
 
-def ingest_wdpa(india_only: bool = True) -> int:
+PAGE_SIZE_DEFAULT = 50      # WDPA polygons are large; small pages avoid >10MB responses
+PROPS = ["WDPAID", "NAME", "DESIG_ENG", "IUCN_CAT"]
+
+
+def _geometry_dict_to_wkt(geom: dict | str | None) -> str:
+    """GEE may serialize geometry as GeoJSON dict or a JSON string."""
+    if not geom:
+        return ""
+    if isinstance(geom, str):
+        try:
+            geom = _json.loads(geom)
+        except _json.JSONDecodeError:
+            return geom
+    try:
+        return shape(geom).wkt
+    except Exception:
+        return ""
+
+
+def ingest_wdpa(india_only: bool = True, page_size: int = PAGE_SIZE_DEFAULT) -> int:
     init_ee()
-    settings = get_settings()
     cfg = load_pipeline_config()
     asset = cfg["gee"]["layers"]["wdpa"]
-
     contract = get_contract("wdpa")
 
     with ingestion_run(
@@ -38,59 +59,43 @@ def ingest_wdpa(india_only: bool = True) -> int:
         if india_only:
             wdpa = wdpa.filter(ee.Filter.eq("ISO3", "IND"))
 
-        # Add a WKT column so we can read it back simply.
-        def _wkt(f: ee.Feature) -> ee.Feature:
-            return f.set("wkt", f.geometry().toString(maxError=10))
+        try:
+            total = int(wdpa.size().getInfo())
+        except Exception as exc:
+            raise RuntimeError(f"Failed to query WDPA size: {exc}") from exc
+        log.info("wdpa.size", total=total, page_size=page_size)
 
-        with_wkt = wdpa.map(_wkt).select(["WDPAID", "NAME", "DESIG_ENG", "IUCN_CAT", "wkt"])
+        rows: list[dict] = []
+        for offset in range(0, total, page_size):
+            page = wdpa.toList(page_size, offset).getInfo()
+            for feat in page:
+                props = dict(feat.get("properties", {}))
+                wkt = _geometry_dict_to_wkt(feat.get("geometry"))
+                if not wkt:
+                    continue
+                rows.append(
+                    {
+                        "wdpa_id": props.get("WDPAID"),
+                        "name": props.get("NAME"),
+                        "designation": props.get("DESIG_ENG"),
+                        "iucn_cat": props.get("IUCN_CAT"),
+                        "wkt": wkt,
+                    }
+                )
+            log.info(
+                "wdpa.page.done",
+                offset=offset,
+                page_rows=len(page),
+                accumulated=len(rows),
+            )
 
-        job_uid = uuid.uuid4().hex[:8]
-        prefix = f"{settings.gcs_prefix}/wdpa_india_{job_uid}"
-        task = ee.batch.Export.table.toCloudStorage(
-            collection=with_wkt,
-            description=f"wdpa_india_{job_uid}",
-            bucket=settings.gcs_bucket,
-            fileNamePrefix=prefix,
-            fileFormat="CSV",
-        )
-        task.start()
-        while task.status().get("state") not in {"COMPLETED", "FAILED", "CANCELLED"}:
-            time.sleep(30)
-        if task.status().get("state") != "COMPLETED":
-            raise RuntimeError(f"WDPA export failed: {task.status()}")
+        if not rows:
+            log.warning("wdpa.empty")
+            return 0
 
-        df = read_csv_glob(prefix)
-        df = df.rename(
-            columns={
-                "WDPAID": "wdpa_id",
-                "NAME": "name",
-                "DESIG_ENG": "designation",
-                "IUCN_CAT": "iucn_cat",
-            }
-        )
-
-        # GEE may emit GeoJSON-formatted geometry strings; convert to WKT via shapely.
-        import json as _json
-
-        from shapely.geometry import shape
-
-        def _to_wkt(s: str) -> str:
-            if not isinstance(s, str) or not s:
-                return ""
-            try:
-                geom = shape(_json.loads(s))
-            except Exception:
-                return s  # may already be WKT
-            return geom.wkt
-
-        df["wkt"] = df["wkt"].apply(_to_wkt)
-        df = df[df["wkt"].str.len() > 0]
-
+        df = pd.DataFrame(rows)
         clean, rejected = validate_and_split(
-            df[["wdpa_id", "name", "designation", "iucn_cat", "wkt"]],
-            contract,
-            run_id=str(run.run_id),
-            source="wdpa",
+            df, contract, run_id=str(run.run_id), source="wdpa"
         )
         clean["ingestion_run_id"] = str(run.run_id)
         n = insert_rows("raw_protected_areas", clean.to_dict(orient="records"))

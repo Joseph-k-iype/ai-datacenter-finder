@@ -1,31 +1,100 @@
-"""Generic GEE zonal-stats driver.
+"""Chunked synchronous GEE zonal stats; per-chunk Parquet cache on disk.
 
-Implements the Q2-validated pattern:
-  1. Reference H3 cells by their *published GEE asset ID* (uploaded once via
-     ``app/grid/gee_asset.py``).
-  2. Run ``reduceRegions`` server-side on the supplied ``ee.Image``.
-  3. Export results to GCS as sharded CSV via
-     ``ee.batch.Export.table.toCloudStorage``.
-  4. Poll the task; on completion, read the CSV shards into a DataFrame
-     using ``gcsfs``/``pandas``.
+Replaces the previous "publish-asset → Export.table.toCloudStorage → read
+back from GCS" pattern with a simpler local-disk pipeline:
 
-This is the single driver every layer-specific ingest module composes with.
+  1. Cells stream from Postgres (``h3_cells_res{R}``) in chunks of
+     ``chunk_size`` (default 2000).
+  2. Each chunk becomes an inline ``ee.FeatureCollection`` (~2 MB, well
+     under the 10 MB request cap).
+  3. ``reduceRegions(...).getInfo()`` runs synchronously.
+  4. The chunk's result is written to
+     ``data/interim/gee/{export_name}/res{R}/chunk_NNNNN.parquet`` —
+     fully resumable: a re-run skips chunks whose Parquet already exists.
+  5. The driver returns the concatenated DataFrame.
+
+Trade-off vs. GCS-async-export:
+  + No GCS bucket / service-account JSON required.
+  + No async polling; straight-line Python execution.
+  + Resumable on transient GEE errors (per-chunk granularity).
+  + Single source of truth for cells (Postgres). No upfront asset
+    publication needed; ``make push-grid-to-gee`` becomes optional.
+  - Sequential, so somewhat slower in wall time than parallel batch
+    exports. At ~2000 cells/chunk × 5–30 s/chunk for 644k res-7 cells
+    that's 10–60 min per raster layer, comparable to the old pattern in
+    practice once GEE task queuing is accounted for.
 """
 from __future__ import annotations
 
 import time
-import uuid
-from collections.abc import Callable
+from collections.abc import Iterator
+from pathlib import Path
 
 import ee
 import pandas as pd
+from sqlalchemy import text
 
-from app.core.config import get_settings, load_pipeline_config
-from app.core.gcs import read_csv_glob
+from app.core.config import PROJECT_ROOT, load_pipeline_config
+from app.core.db import session_scope
 from app.core.logging import get_logger
 from app.ingest.gee.client import init_ee
 
 log = get_logger("ingest.gee.zonal_export")
+
+
+def _wkt_polygon_to_ee_geometry(wkt: str) -> ee.Geometry:
+    """Parse a ``POLYGON((x1 y1, x2 y2, …))`` WKT into ``ee.Geometry.Polygon``.
+
+    Lightweight: enough for H3 hex boundaries which are always single-ring
+    polygons. For general WKT use shapely.wkt.loads + json.dumps.
+    """
+    inner = wkt[wkt.index("((") + 2 : wkt.rindex("))")]
+    ring = [tuple(map(float, p.strip().split())) for p in inner.split(",")]
+    return ee.Geometry.Polygon([ring], proj=None, geodesic=False)
+
+
+def _iter_cell_chunks(resolution: int, chunk_size: int) -> Iterator[list[tuple[str, str]]]:
+    """Yield successive lists of (h3_id, wkt) tuples from Postgres."""
+    sql = text(
+        f"""
+        SELECT h3_id::text AS h3_id, ST_AsText(geom) AS wkt
+        FROM dc_india.h3_cells_res{resolution}
+        ORDER BY h3_id
+        """
+    )
+    with session_scope() as session:
+        result = session.execute(sql)
+        chunk: list[tuple[str, str]] = []
+        for row in result:
+            chunk.append((row.h3_id, row.wkt))
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = []
+        if chunk:
+            yield chunk
+
+
+def _cache_dir_for(export_name: str, resolution: int) -> Path:
+    cache_root = PROJECT_ROOT / "data" / "interim" / "gee" / export_name / f"res{resolution}"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root
+
+
+def _properties_to_dataframe(info: dict, expected_h3_ids: list[str]) -> pd.DataFrame:
+    """Convert a getInfo() FeatureCollection into a DataFrame.
+
+    Cells whose reduction returned no data (e.g. ocean cells with no land
+    pixels) appear as h3_id with NaN reduction columns.
+    """
+    feats = info.get("features", [])
+    by_id: dict[str, dict] = {}
+    for f in feats:
+        props = dict(f.get("properties", {}))
+        h3_id = props.pop("h3_id", None)
+        if h3_id:
+            by_id[h3_id] = props
+    rows = [{"h3_id": h, **by_id.get(h, {})} for h in expected_h3_ids]
+    return pd.DataFrame(rows)
 
 
 def run_zonal_export(
@@ -37,104 +106,119 @@ def run_zonal_export(
     export_name: str,
     scale_m: int,
     crs: str = "EPSG:4326",
-    cells_asset_id: str | None = None,
-    poll_seconds: int | None = None,
-    timeout_minutes: int | None = None,
+    chunk_size: int | None = None,
     tile_scale: int | None = None,
-    enrich: Callable[[ee.FeatureCollection], ee.FeatureCollection] | None = None,
+    fresh: bool = False,
 ) -> pd.DataFrame:
-    """Run a generic reduceRegions over the published H3 asset.
+    """Chunked synchronous reduceRegions over the Postgres-resident H3 grid.
 
     Parameters
     ----------
     image
-        The ``ee.Image`` to reduce.
+        ``ee.Image`` to reduce.
     reducer
-        ``ee.Reducer`` to apply (mean / max / percentile / etc.). Use
-        ``ee.Reducer.combine`` to compute multiple stats in one pass.
+        ``ee.Reducer`` to apply (e.g. ``ee.Reducer.mean()``,
+        ``ee.Reducer.mean().combine(ee.Reducer.max(), sharedInputs=True)``).
     band_names
-        Bands present on ``image`` whose reductions should be kept.
+        Bands to keep on ``image`` before reducing. Pass an empty list to
+        use every band the image already exposes (useful when the raster
+        is user-uploaded and the band name isn't known a priori).
     resolution
-        H3 resolution; resolves the cells asset.
+        H3 resolution; cells are read from ``h3_cells_res{R}``.
     export_name
-        Friendly task name; also used as the GCS file prefix.
+        Friendly name used in the cache path (``data/interim/gee/<name>/...``).
     scale_m
-        Reduction scale in meters. Match the native pixel size.
-    cells_asset_id
-        Override; default resolves from pipeline.yml.
+        Reducer scale in metres; match the raster's native pixel size.
+    chunk_size
+        Cells per GEE request. Default from ``configs/pipeline.yml::gee.export.chunk_size``.
+    tile_scale
+        Raise to 8 or 16 on "Computed value too large" errors.
+    fresh
+        If True, ignore existing chunk Parquets and re-fetch everything.
 
     Returns
     -------
-    DataFrame with at least ``h3_id`` + one column per reduction.
+    Concatenated DataFrame with ``h3_id`` + reducer-output columns.
     """
     init_ee()
-    settings = get_settings()
     cfg = load_pipeline_config()
-    bucket = settings.gcs_bucket
-    if not bucket:
-        raise RuntimeError("GCS_BUCKET not configured (.env)")
-
     export_cfg = cfg["gee"].get("export", {})
-    poll_seconds = poll_seconds or int(export_cfg.get("poll_seconds", 30))
-    timeout_minutes = timeout_minutes or int(export_cfg.get("timeout_minutes", 90))
+    chunk_size = chunk_size or int(export_cfg.get("chunk_size", 2000))
     tile_scale = tile_scale or int(export_cfg.get("tile_scale", 4))
 
-    asset_template = cfg["gee"]["india_h3_asset"]
-    asset_id = cells_asset_id or asset_template.format(project=settings.gee_project).replace(
-        "h3_cells_res7", f"h3_cells_res{resolution}"
-    )
-    cells_fc = ee.FeatureCollection(asset_id)
-    if enrich is not None:
-        cells_fc = enrich(cells_fc)
-
-    job_uid = uuid.uuid4().hex[:8]
-    file_prefix = f"{settings.gcs_prefix}/{export_name}_res{resolution}_{job_uid}"
-
+    cache_dir = _cache_dir_for(export_name, resolution)
     log.info(
         "gee.zonal.start",
         export_name=export_name,
         resolution=resolution,
-        cells_asset=asset_id,
-        gcs_prefix=file_prefix,
         scale_m=scale_m,
+        chunk_size=chunk_size,
+        cache_dir=str(cache_dir),
     )
 
-    reduced = image.select(band_names).reduceRegions(
-        collection=cells_fc,
-        reducer=reducer,
-        scale=scale_m,
-        crs=crs,
-        tileScale=tile_scale,
+    target_image = image.select(band_names) if band_names else image
+    chunk_paths: list[Path] = []
+    chunk_idx = 0
+    total_rows = 0
+
+    for cells_chunk in _iter_cell_chunks(resolution, chunk_size):
+        chunk_path = cache_dir / f"chunk_{chunk_idx:05d}.parquet"
+        chunk_paths.append(chunk_path)
+
+        if chunk_path.exists() and not fresh:
+            log.debug(
+                "gee.zonal.chunk.cached",
+                chunk_idx=chunk_idx,
+                rows=len(cells_chunk),
+            )
+            chunk_idx += 1
+            total_rows += len(cells_chunk)
+            continue
+
+        h3_ids = [h for h, _ in cells_chunk]
+        features = [
+            ee.Feature(_wkt_polygon_to_ee_geometry(wkt), {"h3_id": h3_id})
+            for h3_id, wkt in cells_chunk
+        ]
+        fc = ee.FeatureCollection(features)
+
+        reduced = target_image.reduceRegions(
+            collection=fc,
+            reducer=reducer,
+            scale=scale_m,
+            crs=crs,
+            tileScale=tile_scale,
+        )
+        # Drop geometry from the response to shrink the payload.
+        reduced = reduced.map(lambda f: f.setGeometry(None))
+
+        started = time.monotonic()
+        info = reduced.getInfo()
+        elapsed = time.monotonic() - started
+
+        df = _properties_to_dataframe(info, h3_ids)
+        df.to_parquet(chunk_path, index=False)
+
+        log.info(
+            "gee.zonal.chunk.done",
+            chunk_idx=chunk_idx,
+            rows=len(df),
+            seconds=round(elapsed, 2),
+        )
+        chunk_idx += 1
+        total_rows += len(df)
+
+    if not chunk_paths:
+        log.warning("gee.zonal.empty", export_name=export_name)
+        return pd.DataFrame()
+
+    dfs = [pd.read_parquet(p) for p in chunk_paths]
+    out = pd.concat(dfs, ignore_index=True)
+    log.info(
+        "gee.zonal.complete",
+        export_name=export_name,
+        chunks=len(chunk_paths),
+        rows=len(out),
+        columns=list(out.columns),
     )
-
-    # Keep only the h3_id passthrough + reducer outputs.
-    select_props = ["h3_id"] + [c for c in reduced.first().propertyNames().getInfo() if c not in ("h3_id", "system:index")]
-    reduced = reduced.select(propertySelectors=select_props, retainGeometry=False)
-
-    task = ee.batch.Export.table.toCloudStorage(
-        collection=reduced,
-        description=f"{export_name}_res{resolution}",
-        bucket=bucket,
-        fileNamePrefix=file_prefix,
-        fileFormat="CSV",
-    )
-    task.start()
-    log.info("gee.zonal.task_started", task_id=task.id)
-
-    started = time.monotonic()
-    while True:
-        status = task.status()
-        state = status.get("state", "UNKNOWN")
-        log.debug("gee.zonal.poll", state=state, task_id=task.id)
-        if state in {"COMPLETED"}:
-            break
-        if state in {"FAILED", "CANCELLED", "CANCEL_REQUESTED"}:
-            raise RuntimeError(f"GEE task {task.id} {state}: {status.get('error_message')}")
-        if time.monotonic() - started > timeout_minutes * 60:
-            raise TimeoutError(f"GEE task {task.id} did not finish in {timeout_minutes} min")
-        time.sleep(poll_seconds)
-
-    log.info("gee.zonal.complete", task_id=task.id, prefix=file_prefix)
-    df = read_csv_glob(file_prefix)
-    log.info("gee.zonal.loaded", rows=len(df), columns=list(df.columns))
-    return df
+    return out

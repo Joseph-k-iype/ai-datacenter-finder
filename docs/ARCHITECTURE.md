@@ -58,9 +58,12 @@ when you want to understand the reasoning.
                   ┌────────────────────────▼─────────────────────────┐
                   │  INGEST ADAPTERS (app/ingest/)                   │
                   │                                                  │
-                  │  GEE   : zonal_export.py → GCS CSV → DataFrame   │
+                  │  GEE   : zonal_export.py — chunked sync          │
+                  │          (cells from Postgres → inline FC →      │
+                  │           reduceRegions().getInfo() → Parquet    │
+                  │           cache at data/interim/gee/...)         │
                   │  OSM   : overpass.py     → parse → DataFrame     │
-                  │  WDPA  : GEE export                              │
+                  │  WDPA  : paginated toList().getInfo() (no GCS)   │
                   │  Static: YAML lists                              │
                   │                                                  │
                   │  Every adapter:                                  │
@@ -157,11 +160,15 @@ app/ingest/
   base.py              ← validate_and_split (Pandera → DLQ + clean DF)
   gee/
     client.py          ← ee.Initialize (SA preferred, user fallback)
-    zonal_export.py    ← THE driver:
-                          publishes once-uploaded H3 asset,
-                          runs reduceRegions server-side,
-                          Export.table.toCloudStorage (async),
-                          polls task, reads CSV shards from GCS
+    zonal_export.py    ← THE driver (chunked sync, local-disk cache):
+                          streams cells from Postgres → builds an
+                          inline ee.FeatureCollection per chunk →
+                          reduceRegions(...).getInfo() →
+                          writes data/interim/gee/<layer>/res{R}/
+                            chunk_NNNNN.parquet
+                          (resumable per chunk; no GCS)
+    _assets.py         ← (optional fallback) discover_cells_collection
+                          for the published-asset workflow
     _common.py         ← upsert_zonal (bulk-insert into raster_zonal_*)
     seismic.py
     flood.py
@@ -196,10 +203,28 @@ app/ingest/
    executemany; psycopg3 sends it as one round-trip per chunk).
 5. Context manager closes with status, row count, duration.
 
-Why GEE export instead of inline `getInfo()`? Because at 644 k cells the
-FeatureCollection geometry alone exceeds the 10 MB request-size cap, and
-synchronous compute hits time limits. The async-export → GCS pattern is
-what GEE itself documents for production zonal stats.
+Why chunked synchronous `getInfo()` instead of `Export.table.toCloudStorage`?
+
+The original architectural review correctly identified that **inline** at
+full pan-India scale (644 k cells in one request) exceeds the 10 MB cap.
+The fix is to chunk: ~2000 cells per call ≈ 2 MB inline FeatureCollection,
+well under the limit. Each chunk's response is a few thousand rows of
+properties (no geometry — we strip it server-side via `setGeometry(None)`).
+
+This trades a small wall-clock penalty (sequential vs. parallel batch
+exports) for major simplicity wins:
+
+- **No GCS bucket.** State-IT deployments don't need cross-cloud config.
+- **No async polling.** Straight-line Python execution; easier to debug.
+- **Resumable.** Each chunk's result lands as a Parquet under
+  `data/interim/gee/<layer>/res{R}/chunk_NNNNN.parquet`. A re-run skips
+  any chunk whose file already exists.
+- **Postgres is the single source of truth for cells.** No upfront
+  asset publication; the optional published-asset workflow lives in
+  `app/grid/gee_asset.py` for users who need it.
+
+For WDPA the same idea applies via `toList(page_size, offset).getInfo()`
+paged through ISO3='IND' (~1–2 k polygons at ~50 per page).
 
 ## Governance (every ingest)
 
