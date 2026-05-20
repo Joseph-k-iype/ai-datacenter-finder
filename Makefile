@@ -1,7 +1,9 @@
 .PHONY: help install up down init-db build-grid gee-auth push-grid-to-gee \
         ingest-all ingest-fresh-all ingest-gee ingest-osm ingest-wdpa ingest-static \
+        ingest-stakeholder \
         validate compute-features score-default serve \
-        test test-unit test-integration lint format clean
+        graph-up graph-rebuild graph-stats graph-parity \
+        test test-unit test-integration test-graph lint format clean
 
 PYTHON ?= python
 DC ?= uv run python -m app.cli
@@ -47,6 +49,10 @@ ingest-osm: ## Ingest all OSM vector layers
 	$(DC) ingest osm --layer water $(FRESH_FLAG)
 	$(DC) ingest osm --layer railways $(FRESH_FLAG)
 
+ingest-stakeholder: ## Ingest stakeholder OSM layers (SEZ + data centers)
+	$(DC) ingest osm --layer sez $(FRESH_FLAG)
+	$(DC) ingest osm --layer data-centers $(FRESH_FLAG)
+
 ingest-wdpa: ## Ingest WDPA protected areas (India subset)
 	$(DC) ingest wdpa $(FRESH_FLAG)
 
@@ -54,7 +60,7 @@ ingest-static: ## Load curated static lists (cable landings, metros)
 	$(DC) ingest static --layer cable-landings $(FRESH_FLAG)
 	$(DC) ingest static --layer metros $(FRESH_FLAG)
 
-ingest-all: ingest-gee ingest-osm ingest-wdpa ingest-static ## All ingestion sources (idempotent)
+ingest-all: ingest-gee ingest-osm ingest-stakeholder ingest-wdpa ingest-static ## All ingestion sources (idempotent)
 
 ingest-fresh-all: ## Force re-ingest every source, bypassing the skip-if-recent guard
 	$(MAKE) ingest-all FRESH=1
@@ -76,13 +82,28 @@ score-tier4: ## Score with Tier-4 heavy redundancy weights
 serve: ## Launch Streamlit on :8501
 	uv run streamlit run app/ui/streamlit_app.py
 
+graph-up: ## Bring up FalkorDB only
+	docker compose up -d falkordb
+
+graph-rebuild: ## Full rebuild of the FalkorDB projection from PostGIS
+	$(DC) graph rebuild --reset
+
+graph-stats: ## Print per-label node + per-type edge counts
+	$(DC) graph stats
+
+graph-parity: ## Compare counts between Postgres and FalkorDB; exit nonzero on drift
+	$(DC) graph parity
+
 test: test-unit ## Run unit tests (no docker required)
 
 test-unit:
 	uv run pytest tests/unit -v
 
 test-integration:
-	uv run pytest tests/integration -v -m "not gee"
+	uv run pytest tests/integration -v -m "not gee and not graph"
+
+test-graph:
+	uv run pytest tests -v -m graph
 
 lint:
 	uv run ruff check app tests

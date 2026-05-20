@@ -27,12 +27,13 @@ dark-mode, weight-tunable map for state-IT decision makers.
 4. [Architecture overview](#architecture-overview)
 5. [Repository layout](#repository-layout)
 6. [The Tier-4 differentiator](#the-tier-4-differentiator-dual-feed-power-redundancy)
-7. [Data sources](#data-sources)
-8. [Configuration](#configuration)
-9. [Testing](#testing)
-10. [Scaling considerations](#scaling-considerations)
-11. [Roadmap](#roadmap--upgrade-paths)
-12. [Documentation index](#documentation-index)
+7. [Knowledge graph layer (FalkorDB)](#knowledge-graph-layer-falkordb)
+8. [Data sources](#data-sources)
+9. [Configuration](#configuration)
+10. [Testing](#testing)
+11. [Scaling considerations](#scaling-considerations)
+12. [Roadmap](#roadmap--upgrade-paths)
+13. [Documentation index](#documentation-index)
 
 ---
 
@@ -202,10 +203,13 @@ ai-data-center/
 │   ├── governance/          ← contracts, lineage, DLQ, validators
 │   ├── features/            ← exclusions, distances, redundancy, …
 │   ├── scoring/             ← transforms, algorithm, ranking, funnel
+│   ├── graph/               ← FalkorDB projection (client, schema,
+│   │                          projector/, queries/) — see app/graph/README.md
 │   └── ui/                  ← Streamlit pages + components
 │
 ├── infra/                   ← Infrastructure (see infra/README.md)
-│   ├── postgis/             ← Dockerfile + SQL migrations 001-006
+│   ├── postgis/             ← Dockerfile + SQL migrations 001-007
+│   ├── falkordb/            ← Cypher index/constraint specs (informational)
 │   └── tuning/              ← postgresql.conf for spatial workloads
 │
 ├── configs/                 ← All tunables (see configs/README.md)
@@ -275,6 +279,51 @@ power_redundancy =
 This is what makes the score defensible in an Uptime audit. Full methodology:
 [`docs/tier4_methodology.md`](docs/tier4_methodology.md).
 
+## Knowledge graph layer (FalkorDB)
+
+The same Postgres state is also projected into a **FalkorDB knowledge graph**
+so the system can answer questions PostGIS can't easily express:
+
+- **Cascade failure simulation** — "If substation X fails, which top-N sites
+  lose dual-feed status?" One-hop Cypher on
+  `(:Substation)<-[:CONNECTS]-(:Line)<-[:NEAREST_LINE]-(:Cell)`.
+- **Operator-aware redundancy** — Cells whose primary and dual-feed lines are
+  operated by *different* operators (true grid-operator redundancy, not just
+  topology).
+- **Provenance walk** — From a `Score` node, walk back through `:DERIVED_FROM`,
+  `:NEAREST_*`, `:FROM` edges to every `IngestionRun` that fed it. Surfaces
+  stale-input warnings automatically.
+- **Stakeholder filters** — Sites near a Karnataka SEZ flagged for data-center
+  incentives, or sites within 50 km of an existing AWS / Azure footprint.
+
+**Architecture is hybrid:** PostGIS remains the source of truth (raster zonal
+stats stay there); the graph is a derived view, fully rebuildable via
+`dc graph rebuild`. Lineage and scoring runs are also incrementally synced by
+hooks in `app/governance/lineage.py` and `app/scoring/algorithm.py` —
+soft-failing so a graph outage never breaks an ingest.
+
+**No hardcoded data** — every entity (operators, SEZs, data centers) comes
+from the same ingest layer as the rest of the system: OSM via Overpass for
+SEZ + data-center polygons (`app/ingest/osm/sez.py`,
+`app/ingest/osm/data_centers.py`); operator names are extracted from
+existing `raw_power_lines.operator` and `raw_substations.operator`.
+
+Bring it up:
+
+```bash
+make graph-up         # docker compose up -d falkordb
+make graph-rebuild    # build the projection from Postgres
+make graph-stats      # per-label node + per-type edge counts
+make graph-parity     # drift check vs Postgres (nonzero exit on drift)
+```
+
+Streamlit pages added: **Resilience** (outage simulator), **Provenance**
+(lineage walk + staleness dashboard), **Stakeholder** (operator / SEZ /
+hyperscaler filters).
+
+Details: [`app/graph/README.md`](app/graph/README.md) and
+[`docs/graph_runbook.md`](docs/graph_runbook.md).
+
 ## Data sources
 
 | Layer | Source | License |
@@ -286,6 +335,7 @@ This is what makes the score defensible in an Uptime audit. Full methodology:
 | Land cover | ESA WorldCover 2021 v200 | CC BY 4.0 |
 | Protected | UNEP-WCMC WDPA | CC BY 4.0 |
 | Power / Highway / Water / Rail | OpenStreetMap | ODbL |
+| SEZs / Data centers | OpenStreetMap (`boundary=special_economic_zone`, `telecom|building=data_center`) | ODbL |
 | Solar | Global Solar Atlas (fallback: ERA5-Land) | CC BY 4.0 (World Bank) |
 | Climate | ECMWF ERA5-Land Monthly | © Copernicus |
 | Population | WorldPop 100 m | CC BY 4.0 |

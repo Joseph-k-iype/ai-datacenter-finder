@@ -88,6 +88,33 @@ wdpa_schema = DataFrameSchema(
 )
 
 # ----------------------------------------------------------------------------
+# Stakeholder layers — populated by Overpass, not curated CSVs
+# ----------------------------------------------------------------------------
+sez_schema = DataFrameSchema(
+    {
+        "osm_id": Column(pa.Int64, nullable=True),
+        "name": Column(pa.String, nullable=True),
+        "policy_tag": Column(pa.String, nullable=True),
+        "wkt": Column(pa.String, nullable=False),
+    },
+    strict=False,
+    coerce=True,
+)
+
+data_centers_schema = DataFrameSchema(
+    {
+        "osm_id": Column(pa.Int64, nullable=True),
+        "name": Column(pa.String, nullable=True),
+        "company": Column(pa.String, nullable=True),
+        "tier": Column(pa.Int64, Check.in_range(1, 4), nullable=True),
+        "wkt": Column(pa.String, nullable=False),
+    },
+    strict=False,
+    coerce=True,
+)
+
+
+# ----------------------------------------------------------------------------
 # Static lists
 # ----------------------------------------------------------------------------
 cable_landings_schema = DataFrameSchema(
@@ -190,6 +217,8 @@ CONTRACTS: dict[str, DataFrameSchema] = {
     "osm.highways":       highways_schema,
     "osm.railways":       railways_schema,
     "osm.water_bodies":   water_bodies_schema,
+    "osm.sez":            sez_schema,
+    "osm.data_centers":   data_centers_schema,
     "wdpa":               wdpa_schema,
     "static.cable_landings": cable_landings_schema,
     "static.metros":      metros_schema,

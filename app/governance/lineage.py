@@ -18,11 +18,29 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from sqlalchemy import text
 
-from app.core.config import load_pipeline_config
+from app.core.config import get_settings, load_pipeline_config
 from app.core.db import session_scope
 from app.core.logging import get_logger
 
 log = get_logger("governance.lineage")
+
+
+def _maybe_sync_to_graph(**kwargs) -> None:
+    """Mirror an IngestionRun to FalkorDB if auto-sync is enabled.
+
+    Soft-fails: a FalkorDB outage must never break ingestion. We log and
+    move on. The nightly ``dc graph parity`` job will catch the drift
+    and a manual ``dc graph rebuild --only lineage`` repairs it.
+    """
+    settings = get_settings()
+    if not settings.falkordb_auto_sync:
+        return
+    try:
+        from app.graph.projector.lineage import upsert_ingestion_run_node
+
+        upsert_ingestion_run_node(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("graph.sync.skipped", error=str(exc))
 
 
 def has_recent_success(
@@ -119,6 +137,7 @@ def ingestion_run(
     structlog.contextvars.bind_contextvars(pipeline_run_id=str(run_id), source=source)
     log.info("ingest.start", upstream=upstream_source)
 
+    started_iso = datetime.now(UTC).isoformat()
     with session_scope() as session:
         session.execute(
             text(
@@ -135,6 +154,15 @@ def ingestion_run(
                 "upstream": upstream_source,
             },
         )
+
+    _maybe_sync_to_graph(
+        run_id=str(run_id),
+        source=source,
+        status="running",
+        schema_hash=schema_hash,
+        upstream_source=upstream_source,
+        started_at=started_iso,
+    )
 
     status = "success"
     error_note: str | None = None
@@ -178,4 +206,19 @@ def ingestion_run(
             rejected=ctx.rows_rejected,
             duration_seconds=round(duration, 2),
         )
+
+        _maybe_sync_to_graph(
+            run_id=str(run_id),
+            source=source,
+            status=status,
+            schema_hash=schema_hash,
+            upstream_source=upstream_source,
+            started_at=started_iso,
+            finished_at=datetime.now(UTC).isoformat(),
+            row_count=ctx.row_count,
+            rows_rejected=ctx.rows_rejected,
+            duration_seconds=round(duration, 2),
+            notes=notes or None,
+        )
+
         structlog.contextvars.unbind_contextvars("pipeline_run_id", "source")

@@ -49,6 +49,16 @@ class Settings(BaseSettings):
         "ai-data-center/0.1 (+https://github.com/anthropics/claude-code)"
     )
 
+    # FalkorDB (knowledge-graph projection of Postgres state).
+    # Postgres remains source of truth; FalkorDB is rebuilt from it.
+    falkordb_host: str = "localhost"
+    falkordb_port: int = 6379
+    falkordb_password: str | None = None
+    falkordb_graph: str = "dc_india"
+    # Auto-sync the graph after each ingestion_run finishes (write-through).
+    # Disable for bulk backfills; rebuild explicitly with `dc graph rebuild`.
+    falkordb_auto_sync: bool = True
+
     @property
     def sqlalchemy_url(self) -> str:
         return (

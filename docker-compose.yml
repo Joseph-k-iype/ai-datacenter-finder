@@ -39,5 +39,29 @@ services:
       postgis:
         condition: service_healthy
 
+  # FalkorDB: Redis-protocol property graph. Source of truth stays in
+  # postgis; the graph is a derived/queryable projection rebuilt via
+  # `dc graph rebuild` and updated incrementally by ingestion hooks.
+  # Port 3000 exposes the FalkorDB Workbench UI for ad-hoc Cypher.
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: dc_falkordb
+    restart: unless-stopped
+    ports:
+      - "${FALKORDB_PORT:-6379}:6379"
+      - "3000:3000"
+    volumes:
+      - falkordb-data:/data
+    command:
+      - "--save"
+      - "60"
+      - "1000"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
 volumes:
   postgres-data:
+  falkordb-data:

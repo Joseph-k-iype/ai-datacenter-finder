@@ -215,4 +215,18 @@ def score_cells(
     )
 
     log.info("scoring.complete", run_id=run_id, cells=len(scored))
+
+    # Auto-project this run to FalkorDB if enabled. Soft-fails so a graph
+    # outage never breaks scoring (the parity job + manual rebuild repair
+    # any drift).
+    from app.core.config import get_settings
+
+    if get_settings().falkordb_auto_sync:
+        try:
+            from app.graph.projector.scoring import hook_after_scoring_run
+
+            hook_after_scoring_run(str(run_id), resolution=resolution)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("scoring.graph_sync_skipped", error=str(exc))
+
     return run_id, len(scored)

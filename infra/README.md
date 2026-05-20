@@ -15,7 +15,11 @@ infra/
 │       ├── 003_raw_layers.sql ← all raw_* vector tables + raster_zonal_*
 │       ├── 004_features.sql   ← cell_features_res{7,8} wide tables
 │       ├── 005_scoring.sql    ← scoring_runs + scores_res{7,8} + top_sites_res7
-│       └── 006_governance.sql ← ingestion_runs + dlq + schema_contracts + dq_check_results
+│       ├── 006_governance.sql ← ingestion_runs + dlq + schema_contracts + dq_check_results
+│       └── 007_stakeholder_layers.sql ← raw_sez + raw_data_centers (OSM-sourced)
+├── falkordb/                  ← Knowledge-graph projection (Redis-protocol)
+│   ├── README.md
+│   └── migrations/001_indexes.cypher  ← informational; truth in app/graph/schema.py
 └── tuning/
     └── postgresql.conf        ← shared_buffers, work_mem, parallel workers, JIT
 ```

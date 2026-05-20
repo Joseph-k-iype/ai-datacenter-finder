@@ -19,4 +19,12 @@ def dispatch(layer: str, *, with_topology: bool = False, fresh: bool = False) ->
         from app.ingest.osm.railways import ingest_railways
 
         return ingest_railways(fresh=fresh)
+    if layer == "sez":
+        from app.ingest.osm.sez import ingest_sez
+
+        return ingest_sez(fresh=fresh)
+    if layer == "data-centers":
+        from app.ingest.osm.data_centers import ingest_data_centers
+
+        return ingest_data_centers(fresh=fresh)
     raise ValueError(f"Unknown OSM layer: {layer}")

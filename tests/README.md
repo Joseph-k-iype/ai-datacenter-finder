@@ -4,10 +4,14 @@
 tests/
 ├── conftest.py            ← shared fixtures (pg_container for integration)
 ├── unit/                  ← no docker; runs in ~25 s
-│   ├── test_transforms.py     (scoring normalizers)
-│   ├── test_h3_utils.py       (H3 helpers, no DB)
-│   ├── test_contracts.py      (Pandera schemas)
-│   └── test_redundancy_logic.py  (NetworkX sub-grid components)
+│   ├── test_transforms.py             (scoring normalizers)
+│   ├── test_h3_utils.py               (H3 helpers, no DB)
+│   ├── test_contracts.py              (Pandera schemas)
+│   ├── test_redundancy_logic.py       (NetworkX sub-grid components)
+│   ├── test_graph_schema.py           (FalkorDB label/edge/index conventions)
+│   ├── test_graph_queries.py          (canonical Cypher queries well-formed)
+│   └── test_stakeholder_classification.py
+│                                      (operator + data-center heuristics)
 ├── integration/           ← requires docker (testcontainers spins postgis)
 │   └── test_db_migrations.py
 └── fixtures/              ← (reserved for small synthetic datasets)
@@ -35,6 +39,7 @@ Markers (`pyproject.toml`):
 |---|---|
 | `integration` | requires Postgres testcontainer |
 | `gee` | requires real Google Earth Engine auth (skipped by default) |
+| `graph` | requires a running FalkorDB instance |
 | `slow` | takes >30 s |
 
 ## What's covered

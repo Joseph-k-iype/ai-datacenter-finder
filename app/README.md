@@ -42,7 +42,9 @@ app/
 │   │   ├── power_topology.py  ← THE Tier-4 keystone: NetworkX sub-grid components.
 │   │   ├── highways.py        ← motorway + trunk.
 │   │   ├── water.py           ← rivers + lakes/reservoirs.
-│   │   └── railways.py
+│   │   ├── railways.py
+│   │   ├── sez.py             ← Special Economic Zones (Overpass).
+│   │   └── data_centers.py    ← Existing hyperscaler footprint (Overpass).
 │   ├── wdpa/protected_areas.py ← WDPA via GEE; India subset.
 │   └── static/
 │       ├── cable_landings.py   ← curated submarine cable landings from sources.yml.
@@ -68,6 +70,13 @@ app/
 │   ├── ranking.py    ← greedy diversity-aware top-N per state.
 │   └── funnel.py     ← res-6 exclude → res-7 score → res-8 drill-down orchestrator.
 │
+├── graph/            ← FalkorDB knowledge-graph projection (see app/graph/README.md)
+│   ├── client.py     ← client singleton + batched_write helper.
+│   ├── schema.py     ← N (node labels), E (edge types), INDEXES.
+│   ├── parity.py     ← count-diff vs Postgres (drift detector).
+│   ├── projector/    ← Postgres → FalkorDB writers (full_rebuild orchestrator + per-slice modules).
+│   └── queries/      ← canonical Cypher (UI + CLI + tests share).
+│
 └── ui/               ← Streamlit + pydeck
     ├── streamlit_app.py ← landing.
     ├── _data.py         ← @st.cache_data DB loaders.
@@ -76,7 +85,10 @@ app/
         ├── 2_Tuner.py
         ├── 3_Site_Detail.py
         ├── 4_Lineage.py
-        └── 5_Compare.py
+        ├── 5_Compare.py
+        ├── 6_Resilience.py   ← outage simulator (FalkorDB-backed)
+        ├── 7_Provenance.py   ← lineage walk + staleness dashboard
+        └── 8_Stakeholder.py  ← operator / SEZ / hyperscaler filters
 ```
 
 ## Conventions

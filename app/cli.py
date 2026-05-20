@@ -18,9 +18,11 @@ app = typer.Typer(help="Pan-India AI Data Center site selection CLI.", no_args_i
 grid_app = typer.Typer(help="H3 grid management.", no_args_is_help=True)
 ingest_app = typer.Typer(help="Data ingestion (GEE / OSM / WDPA / static).", no_args_is_help=True)
 features_app = typer.Typer(help="Feature computation.", no_args_is_help=True)
+graph_app = typer.Typer(help="FalkorDB knowledge-graph projection.", no_args_is_help=True)
 app.add_typer(grid_app, name="grid")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(features_app, name="features")
+app.add_typer(graph_app, name="graph")
 
 
 # ----------------------------------------------------------------------------
@@ -230,6 +232,105 @@ def score(
         resolution=res,
     )
     typer.echo(f"score_run_id={run_id} cells_scored={n:,} top_sites={top}")
+
+
+# ----------------------------------------------------------------------------
+# graph (FalkorDB knowledge-graph projection)
+# ----------------------------------------------------------------------------
+@graph_app.command("health")
+def graph_health() -> None:
+    """Ping FalkorDB and print node-count summary."""
+    from app.graph.client import health as graph_health_check
+
+    typer.echo(json.dumps(graph_health_check(), indent=2, default=str))
+
+
+@graph_app.command("rebuild")
+def graph_rebuild(
+    reset: bool = typer.Option(False, "--reset", help="Drop the graph first (otherwise MERGE on top)"),
+    only: list[str] = typer.Option(
+        [],
+        "--only",
+        help="Phases to run: cells, power, lineage, scoring, stakeholder",
+    ),
+) -> None:
+    """Rebuild the FalkorDB projection from PostGIS. Idempotent."""
+    from app.graph.projector.full_rebuild import rebuild_all
+
+    res = rebuild_all(reset=reset, only=only or None)
+    typer.echo(
+        json.dumps(
+            {
+                "duration_seconds": round(res.duration_seconds, 2),
+                "counts": res.counts,
+                "skipped": res.skipped,
+            },
+            indent=2,
+            default=str,
+        )
+    )
+
+
+@graph_app.command("stats")
+def graph_stats() -> None:
+    """Print per-label node counts + per-type edge counts."""
+    from app.graph.client import query_rows
+    from app.graph.schema import E, N
+
+    nodes = {}
+    for label in vars(N).values():
+        if not isinstance(label, str) or label.startswith("_"):
+            continue
+        try:
+            r = query_rows(f"MATCH (n:{label}) RETURN count(n)")
+            nodes[label] = int(r[0][0]) if r else 0
+        except Exception as exc:  # noqa: BLE001
+            nodes[label] = f"error: {exc}"
+
+    edges = {}
+    for etype in vars(E).values():
+        if not isinstance(etype, str) or etype.startswith("_"):
+            continue
+        try:
+            r = query_rows(f"MATCH ()-[r:{etype}]->() RETURN count(r)")
+            edges[etype] = int(r[0][0]) if r else 0
+        except Exception as exc:  # noqa: BLE001
+            edges[etype] = f"error: {exc}"
+
+    typer.echo(json.dumps({"nodes": nodes, "edges": edges}, indent=2))
+
+
+@graph_app.command("query")
+def graph_query(
+    cypher: str = typer.Argument(..., help="Cypher statement"),
+    limit: int = typer.Option(50, "--limit", help="Max rows to print"),
+) -> None:
+    """Run an ad-hoc Cypher query and print rows as JSON.
+
+    Read-only by convention — use at your own risk for writes.
+    """
+    from app.graph.client import query_rows
+
+    rows = query_rows(cypher)
+    truncated = rows[:limit]
+    typer.echo(
+        json.dumps(
+            {"row_count": len(rows), "shown": len(truncated), "rows": truncated},
+            indent=2,
+            default=str,
+        )
+    )
+
+
+@graph_app.command("parity")
+def graph_parity() -> None:
+    """Compare key counts between Postgres and FalkorDB. Exit non-zero on drift."""
+    from app.graph.parity import run_parity_checks
+
+    report = run_parity_checks()
+    typer.echo(json.dumps(report, indent=2, default=str))
+    if report.get("drift"):
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":  # pragma: no cover

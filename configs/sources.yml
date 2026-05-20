@@ -49,6 +49,41 @@ osm_overpass:
         way["waterway"="river"](area.in);
       );
       out body geom;
+  sez:
+    # Special Economic Zones. OSM tagging here is inconsistent; we union
+    # the canonical `boundary=special_economic_zone` with industrial land
+    # parcels whose name contains "SEZ" (common Indian convention).
+    query: |
+      [out:json][timeout:{timeout}];
+      area["ISO3166-1"="IN"][admin_level=2]->.in;
+      (
+        relation["boundary"="special_economic_zone"](area.in);
+        way["boundary"="special_economic_zone"](area.in);
+        relation["landuse"="industrial"]["name"~"SEZ|Special Economic",i](area.in);
+        way["landuse"="industrial"]["name"~"SEZ|Special Economic",i](area.in);
+        way["place"="industrial"]["name"~"SEZ|Special Economic",i](area.in);
+      );
+      out center body geom;
+  data_centers:
+    # Existing hyperscaler footprint. The tag landscape is messy — pulls
+    # any feature OSM has flagged as a data center, plus telco buildings
+    # whose name strongly suggests one.
+    query: |
+      [out:json][timeout:{timeout}];
+      area["ISO3166-1"="IN"][admin_level=2]->.in;
+      (
+        node["telecom"="data_center"](area.in);
+        way["telecom"="data_center"](area.in);
+        node["office"="data_center"](area.in);
+        way["office"="data_center"](area.in);
+        node["building"="data_center"](area.in);
+        way["building"="data_center"](area.in);
+        node["industrial"~"telecommunication|data_center"](area.in);
+        way["industrial"~"telecommunication|data_center"](area.in);
+        node["name"~"data ?cent(er|re)",i]["amenity"!="library"](area.in);
+        way["name"~"data ?cent(er|re)",i]["amenity"!="library"](area.in);
+      );
+      out center body;
 
 wdpa:
   india_subset:
