@@ -53,36 +53,88 @@ def dispatch(layer: str, resolution: int = 7, *, fresh: bool = False) -> int:
     raise ValueError(f"Unknown GEE layer: {layer}")
 
 
-def ingest_all(resolution: int = 7, *, fresh: bool = False) -> dict[str, int]:
+def ingest_all(
+    resolution: int = 7,
+    *,
+    fresh: bool = False,
+    parallel_layers: int | None = None,
+) -> dict[str, int]:
     """Run every GEE layer in a single Python process.
 
     Saves ~5s × 7 layers of subprocess startup overhead vs. invoking the
     CLI per-layer from Make. Per-source skip-if-recent + per-chunk Parquet
     caching still apply, so re-runs remain idempotent.
 
-    Returns a mapping of layer → row count (or 0 if the layer was skipped).
+    Concurrency model
+    -----------------
+    - ``parallel_layers=1`` (default): layers run one after another, each
+      with its own internal chunk-parallel ThreadPoolExecutor
+      (``configs/pipeline.yml::gee.export.max_workers``, default 10).
+    - ``parallel_layers=N>1``: N layers run concurrently. Each still uses
+      its own ``max_workers`` chunk pool, so total in-flight HTTP calls
+      can reach ``N × max_workers``. Free-tier GEE typically tolerates
+      ~20-30 concurrent requests; raise cautiously.
+
+    Returns
+    -------
+    Mapping of layer → row count. ``0`` means skipped or empty; ``-1``
+    means the layer raised (errors are aggregated into a single
+    ``RuntimeError`` at the end so failure reports are complete).
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from app.core.config import load_pipeline_config
     from app.core.logging import get_logger
     from app.ingest.gee.client import init_ee
 
     log = get_logger("ingest.gee.all")
     init_ee()
 
+    if parallel_layers is None:
+        parallel_layers = int(
+            load_pipeline_config()["gee"].get("export", {}).get("layer_parallelism", 1)
+        )
+    parallel_layers = max(1, parallel_layers)
+
     results: dict[str, int] = {}
     failed: dict[str, str] = {}
 
-    for layer in ALL_LAYERS:
-        log.info("ingest.layer.start", layer=layer)
+    def _run_one(layer: str) -> tuple[str, int | Exception]:
         try:
-            # Each layer initialises ee separately; init_ee is lru_cached so it's a no-op.
-            results[layer] = dispatch(layer=layer, resolution=resolution, fresh=fresh)
-            log.info("ingest.layer.done", layer=layer, rows=results[layer])
+            return layer, dispatch(layer=layer, resolution=resolution, fresh=fresh)
         except Exception as exc:
-            failed[layer] = f"{type(exc).__name__}: {exc}"
-            log.error("ingest.layer.failed", layer=layer, error=str(exc))
-            # Don't abort the whole run — let later layers proceed so the
-            # user gets a complete failure report in one shot.
-            results[layer] = -1
+            return layer, exc
+
+    if parallel_layers <= 1:
+        log.info("ingest.all.start", layers=list(ALL_LAYERS), mode="sequential")
+        for layer in ALL_LAYERS:
+            log.info("ingest.layer.start", layer=layer)
+            _, outcome = _run_one(layer)
+            if isinstance(outcome, Exception):
+                failed[layer] = f"{type(outcome).__name__}: {outcome}"
+                log.error("ingest.layer.failed", layer=layer, error=str(outcome))
+                results[layer] = -1
+            else:
+                results[layer] = outcome
+                log.info("ingest.layer.done", layer=layer, rows=outcome)
+    else:
+        log.info(
+            "ingest.all.start",
+            layers=list(ALL_LAYERS),
+            mode="parallel",
+            parallel_layers=parallel_layers,
+        )
+        with ThreadPoolExecutor(max_workers=parallel_layers) as pool:
+            futures = {pool.submit(_run_one, layer): layer for layer in ALL_LAYERS}
+            for future in as_completed(futures):
+                layer, outcome = future.result()
+                if isinstance(outcome, Exception):
+                    failed[layer] = f"{type(outcome).__name__}: {outcome}"
+                    log.error("ingest.layer.failed", layer=layer, error=str(outcome))
+                    results[layer] = -1
+                else:
+                    results[layer] = outcome
+                    log.info("ingest.layer.done", layer=layer, rows=outcome)
 
     log.info(
         "ingest.all.summary",

@@ -128,6 +128,15 @@ def ingest_gee(
 def ingest_gee_all(
     resolution: int = typer.Option(7, "--res"),
     fresh: bool = typer.Option(False, "--fresh", help="Bypass skip-if-recent guard."),
+    parallel_layers: int = typer.Option(
+        1,
+        "--parallel-layers",
+        help=(
+            "How many GEE layers to run concurrently. Each layer still uses its own "
+            "chunk-level worker pool, so total in-flight requests = N × max_workers. "
+            "Default 1. Push to 3 on free-tier GEE; higher on paid quotas."
+        ),
+    ),
 ) -> None:
     """Run EVERY GEE layer in a single process (avoids 7× subprocess startup).
 
@@ -135,7 +144,9 @@ def ingest_gee_all(
     """
     from app.ingest.gee import ingest_all
 
-    results = ingest_all(resolution=resolution, fresh=fresh)
+    results = ingest_all(
+        resolution=resolution, fresh=fresh, parallel_layers=parallel_layers
+    )
     for layer, n in results.items():
         suffix = " (skipped or empty)" if n == 0 else ""
         typer.echo(f"gee.{layer} res={resolution}: {n:,} rows{suffix}")

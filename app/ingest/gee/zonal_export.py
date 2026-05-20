@@ -25,7 +25,30 @@ Trade-off vs. GCS-async-export:
 
 The previous version ran chunks strictly serially and took ~10 hours
 end-to-end at pan-India scale; the parallel pipeline reduces this to
-~90 minutes total across all 6 raster layers.
+~30-90 minutes total across all 6 raster layers depending on settings.
+
+Why threads, not asyncio?
+-------------------------
+``earthengine-api`` is built on ``googleapiclient`` → ``httplib2``,
+which is **synchronous**. There is no native ``async`` EE client. Wrapping
+its calls in ``asyncio.to_thread(...)`` would just run them on a
+``ThreadPoolExecutor`` under the hood — identical performance, more
+ceremony. To get true asyncio benefit we'd have to reimplement the EE
+REST/Cloud-API client on top of ``httpx.AsyncClient``, a multi-week
+project for ~zero gain because **the bottleneck is GEE-server compute
+time, not Python's I/O scheduler**.
+
+For our workload (network-I/O-bound, waiting on GEE compute), threads
+and asyncio are throughput-equivalent. Threads also share memory cheaply
+which matters for the in-memory cell list. We default to 10 chunk
+workers; the M4 family handles 20+ without breaking a sweat — the
+practical limit is GEE's per-account rate cap, not local CPU.
+
+Why not multiprocessing?
+------------------------
+Each subprocess would need its own ``ee.Initialize()`` (~1.5 s) and its
+own Postgres connection pool. IPC for the chunk results would dominate.
+Threads share `ee` state and the SQLAlchemy engine for free.
 """
 from __future__ import annotations
 

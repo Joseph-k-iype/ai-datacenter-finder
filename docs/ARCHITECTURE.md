@@ -438,6 +438,53 @@ Concrete tuning hooks:
 - `app/core/db.py::bulk_execute(chunk_size=...)`: default 5000;
   acceptable up to ~50k per chunk before psycopg buffer pressure.
 
+## Concurrency choices
+
+### Why threads, not asyncio (for GEE)
+
+`earthengine-api` → `googleapiclient` → `httplib2` is a synchronous
+stack. There is no native async EE client. Wrapping its calls in
+`asyncio.to_thread(...)` would just push them onto a `ThreadPoolExecutor`
+under the hood — identical performance, extra ceremony.
+
+The actual bottleneck is **GEE server-side compute time** (15-30 s per
+chunk), not Python's I/O scheduler. Threads and asyncio are equivalent
+for network-I/O-bound work; threads also share memory cheaply, which we
+exploit for the in-memory cell list. Going truly async would require
+reimplementing the EE REST/Cloud-API client on top of `httpx.AsyncClient`
+— a multi-week project for ~zero throughput gain.
+
+### Why not multiprocessing
+
+Each subprocess would need its own `ee.Initialize()` (~1.5 s) and a
+fresh Postgres connection pool. IPC overhead for chunk results would
+dominate. Threads share `ee` state and the SQLAlchemy engine for free.
+
+### Two levels of concurrency
+
+We expose two independent parallelism knobs:
+
+1. **Chunk-level** (`gee.export.max_workers`): each layer's chunks run
+   in a `ThreadPoolExecutor`. Default 10. Free-tier GEE typically allows
+   10-20 concurrent requests per project.
+2. **Layer-level** (`gee.export.layer_parallelism` or
+   `--parallel-layers N`): the 7 GEE layers run concurrently in
+   `ingest_all`. Default 1 (sequential layers). Pushing this above 1
+   multiplies in-flight requests, so verify your quota first.
+
+For an M4 MacBook Air on free-tier GEE, a good starting point is
+`chunk_size=5000, max_workers=10, parallel_layers=1`. To push harder
+(paid Cloud-EE quota): `chunk_size=8000, max_workers=16,
+parallel_layers=3`.
+
+### Postgres connections under parallelism
+
+The SQLAlchemy engine has `pool_size=10, max_overflow=20`, so up to 30
+concurrent sessions are supported. Each chunk briefly opens a session
+for the upsert; with 10-20 concurrent chunks this stays well within
+the pool. If you push `max_workers × parallel_layers > 25`, raise
+`pool_size` in `app/core/db.py`.
+
 ## Trade-offs explicitly rejected
 
 - **Vector tiles for the UI** — too heavy for a PoC; H3 hexagons are

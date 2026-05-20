@@ -53,16 +53,22 @@ gee:
       country_iso3: "IND"
 
   export:
-    # Cells per reduceRegions call. Keep the inline FeatureCollection
-    # payload under the 10 MB request cap. 2000 is safe for res-7 hexagons;
-    # raise for cheap reducers (mean only) or lower for heavy reducers
-    # (combine+percentile).
-    chunk_size: 2000
+    # Cells per reduceRegions call. Larger chunks amortise the per-request
+    # fixed cost (~1-2s of auth + scheduling) over more cells. At res-7
+    # the inline FeatureCollection for 5000 hexagons is ~2.5 MB JSON,
+    # comfortably under GEE's 10 MB request cap.
+    chunk_size: 5000
     # Parallel chunk workers per layer. GEE's reduceRegions.getInfo() is a
-    # blocking HTTP call that releases the GIL, so threads are the right
-    # primitive. 6 is safe for free-tier accounts; raise to 10-12 on paid
-    # quotas, lower to 2-3 if you hit 429 rate-limit errors.
-    max_workers: 6
+    # blocking HTTP call that releases the GIL — threads are the right
+    # primitive (see app/ingest/gee/zonal_export.py for the "why not asyncio"
+    # rationale). 10 is safe for free-tier accounts on the public EE
+    # endpoint; raise to 16-20 on paid Cloud-EE quotas, lower to 2-3 if you
+    # see 429 rate-limit errors.
+    max_workers: 10
+    # When `dc ingest gee-all --parallel-layers N` is used, N layers run
+    # concurrently. Each still uses its own max_workers pool, so total
+    # in-flight HTTP calls = N × max_workers — beware GEE quotas.
+    layer_parallelism: 1
     tile_scale: 4          # raise to 8 or 16 on "Computed value too large"
 
 ingestion:
