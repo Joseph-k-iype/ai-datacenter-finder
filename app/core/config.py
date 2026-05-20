@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     overpass_url: str = "https://overpass-api.de/api/interpreter"
     overpass_timeout: int = 180
     overpass_rate_limit_sec: float = 1.0
+    # overpass-api.de's front-end rejects requests sent with the default
+    # python-requests User-Agent (HTTP 406). Identify the client per the
+    # OSM API etiquette: app name + contact.
+    overpass_user_agent: str = (
+        "ai-data-center/0.1 (+https://github.com/anthropics/claude-code)"
+    )
 
     @property
     def sqlalchemy_url(self) -> str:

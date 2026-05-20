@@ -36,6 +36,10 @@ def _post(query: str) -> dict[str, Any]:
         settings.overpass_url,
         data={"data": query},
         timeout=(30, settings.overpass_timeout + 30),
+        headers={
+            "User-Agent": settings.overpass_user_agent,
+            "Accept": "application/json",
+        },
     )
     if resp.status_code == 429 or resp.status_code >= 500:
         log.warning("overpass.retryable", status=resp.status_code)
