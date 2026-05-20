@@ -45,20 +45,26 @@ def push_many(
 ) -> int:
     if not rows:
         return 0
+    truncated_error = error[:2000]
+    run_id_str = str(run_id)
+    params = [
+        {
+            "run_id": run_id_str,
+            "source": source,
+            "payload": json.dumps(r, default=str),
+            "error": truncated_error,
+        }
+        for r in rows
+    ]
     with session_scope() as session:
         session.execute(
             text(
                 """
                 INSERT INTO dc_india.dead_letter_queue (run_id, source, payload, error)
-                SELECT :run_id, :source, CAST(unnest(:payloads::text[]) AS JSONB), :error
+                VALUES (:run_id, :source, CAST(:payload AS JSONB), :error)
                 """
             ),
-            {
-                "run_id": str(run_id),
-                "source": source,
-                "payloads": [json.dumps(r, default=str) for r in rows],
-                "error": error[:2000],
-            },
+            params,
         )
     log.warning("dlq.pushed", source=source, count=len(rows), error=error[:200])
     return len(rows)

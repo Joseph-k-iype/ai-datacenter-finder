@@ -41,7 +41,7 @@ def _era5_fallback(cfg: dict) -> ee.Image:
     """Derive PVOUT + GHI from ERA5-Land monthly surface solar radiation."""
     window = cfg["gee"]["windows"]["climate"]
     era5_ghi = (
-        ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY")
+        ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR")
         .filterDate(window["start_date"], window["end_date"])
         .select("surface_solar_radiation_downwards_sum")
         .sum()

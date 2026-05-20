@@ -29,7 +29,7 @@ gee:
     slope:      "USGS/SRTMGL1_003"
     landcover:  "ESA/WorldCover/v200"
     solar:      "projects/{project}/assets/global_solar_atlas_pvout"
-    climate:    "ECMWF/ERA5_LAND/MONTHLY"
+    climate:    "ECMWF/ERA5_LAND/MONTHLY_AGGR"
     population: "WorldPop/GP/100m/pop"
     wdpa:       "WCMC/WDPA/current/polygons"
 
