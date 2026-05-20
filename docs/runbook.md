@@ -81,8 +81,19 @@ make compute-features         # ~10 min for res 6 + res 7
 # 9. Score
 make score-default            # produces scores_res7
 
-# 10. Serve
+# 10. (Optional but recommended) Knowledge graph projection
+# Powers the Resilience / Provenance / Stakeholder UI pages and the
+# cascade-failure queries. PostGIS remains the source of truth — the
+# graph is a derived view rebuildable from scratch.
+make graph-up                 # start FalkorDB (Redis-protocol)
+make graph-rebuild            # ~5 min on the full pan-India dataset
+make graph-stats              # confirm nodes + edges
+make graph-parity             # exits nonzero on drift > 0.5 %
+
+# 11. Serve
 make serve                    # streamlit on :8501
+# Pages: 1_Map, 2_Tuner, 3_Site_Detail, 4_Lineage, 5_Compare,
+#        6_Resilience, 7_Provenance, 8_Stakeholder  (last 3 are graph-backed)
 ```
 
 ## Common pitfalls
@@ -105,10 +116,21 @@ make serve                    # streamlit on :8501
 - **"Streamlit map is blank":** you scored before computing features, or
   no cells survived exclusion. Inspect `cell_features_res7` row counts
   in pgAdmin (port 5050).
+- **"FalkorDB unreachable" on Resilience / Provenance / Stakeholder
+  pages:** the graph service isn't up. `make graph-up`. If up but
+  empty, `make graph-rebuild`. See [`docs/graph_runbook.md`](graph_runbook.md).
+- **`dc graph parity` reports drift after an ingest:** the auto-sync
+  hook may have soft-failed silently (check logs for
+  `graph.sync.skipped`). Run `make graph-rebuild` to repair.
+- **`dc ingest osm --layer sez` returns 0 rows:** OSM tagging for
+  Indian SEZs is sparse. This is expected; the query unions the
+  canonical tag with name-matched `landuse=industrial` parcels, so
+  partial coverage is normal.
 
 ## Tearing it all down
 
 ```bash
 make down
 docker volume rm ai-data-center_postgres-data     # ⚠ destroys data
+docker volume rm ai-data-center_falkordb-data     # ⚠ destroys the graph
 ```

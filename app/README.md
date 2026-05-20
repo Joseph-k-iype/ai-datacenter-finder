@@ -123,7 +123,15 @@ app/
    then a top-level Make target if it should run from `make ingest-all`.
 5. **Feature use:** if the layer feeds scoring, add a column to
    `cell_features_res7` (next migration) and a writer in `app/features/`.
-6. **Documentation:** update `docs/data_sources.md` and
+6. **Graph projection** (optional): if the layer represents an entity the
+   resilience / lineage / stakeholder queries should see, add:
+   - a node label to `app/graph/schema.py::N` + `IndexSpec` to `INDEXES`,
+   - a projector function in `app/graph/projector/` reading from your
+     new Postgres table,
+   - the projector call in `app/graph/projector/full_rebuild.py`.
+   The projector follows the standard `UNWIND $rows AS r MERGE ...` /
+   `batched_write()` pattern — copy from `cells.py` or `power.py`.
+7. **Documentation:** update `docs/data_sources.md` and
    `data/docs/DATA_DICTIONARY.md`.
 
 ## CLI surface
@@ -140,9 +148,16 @@ Every command is in `cli.py`. Subcommand groups:
 | `dc grid build --res 6 --res 7 [--res 8]` | Populate H3 cells from GADM India. |
 | `dc grid push-to-gee --res 7` | Upload H3 asset to GEE. |
 | `dc ingest gee --layer {seismic\|flood\|slope\|landcover\|solar\|climate\|population}` | Single-layer GEE ingest. |
-| `dc ingest osm --layer {power\|highways\|water\|railways} [--with-topology]` | Overpass ingest. |
+| `dc ingest osm --layer {power\|highways\|water\|railways\|sez\|data-centers} [--with-topology]` | Overpass ingest. |
 | `dc ingest wdpa` | UNEP-WCMC protected areas via GEE. |
 | `dc ingest static --layer {cable-landings\|metros}` | Curated lists. |
 | `dc features compute --res R --kind {exclusion\|scoring\|all} [--top-n N]` | Build feature columns. |
+| `dc graph health` | Ping FalkorDB; print node-count summary. |
+| `dc graph rebuild [--reset] [--only PHASE ...]` | Rebuild FalkorDB projection from PostGIS. Idempotent. |
+| `dc graph stats` | Per-label node + per-type edge counts (JSON). |
+| `dc graph query CYPHER [--limit N]` | Run an ad-hoc Cypher; print rows as JSON. |
+| `dc graph parity` | Compare counts vs Postgres; exit nonzero on drift > 0.5 %. |
 
-Top-level Makefile targets bundle these — see `make help`.
+Top-level Makefile targets bundle these — see `make help`. Graph
+commands also have shortcuts: `make graph-up`, `make graph-rebuild`,
+`make graph-stats`, `make graph-parity`, `make ingest-stakeholder`.

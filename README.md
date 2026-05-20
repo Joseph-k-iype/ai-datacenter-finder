@@ -98,11 +98,19 @@ make validate                           # schema contracts + DQ checks
 make compute-features                   # exclusion → distances → redundancy → coverage
 make score-default                      # produces scores_res7 + top_sites_res7
 
-# 5. Serve
-make serve                              # streamlit on :8501
+# 5. Knowledge graph (optional but recommended — powers Resilience /
+#    Provenance / Stakeholder UI pages and the cascade-failure queries)
+make graph-up                           # start FalkorDB container (Redis-protocol)
+make graph-rebuild                      # project Postgres state into the graph (~5 min)
+make graph-stats                        # confirm nodes + edges populated
+make graph-parity                       # nonzero exit on drift > 0.5 %
+
+# 6. Serve
+make serve                              # streamlit on :8501 — 8 pages, last 3 graph-backed
 ```
 
 Detailed walkthrough in [`docs/runbook.md`](docs/runbook.md).
+Graph-layer specifics in [`docs/graph_runbook.md`](docs/graph_runbook.md).
 
 ## Architecture overview
 

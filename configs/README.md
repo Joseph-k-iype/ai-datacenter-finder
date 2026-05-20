@@ -10,7 +10,7 @@ files.
 |---|---|
 | `pipeline.yml` | bbox, H3 resolutions, GEE asset IDs, raster scales, voltage thresholds, topology snap radii, GEE export timing, DQ row-count bounds |
 | `exclusions.yml` | hard-mask thresholds (PGA, flood %, slope °, landcover %) |
-| `sources.yml` | URLs, Overpass queries, curated cable-landings, metros |
+| `sources.yml` | URLs, Overpass queries (power, highways, water, railways, **sez, data_centers**), curated cable-landings, metros |
 | `weights/default.yml` | balanced scoring weights + transform params |
 | `weights/tier4_focused.yml` | heavy power-redundancy weighting |
 | `weights/green_focused.yml` | heavy solar / climate weighting |
