@@ -124,6 +124,23 @@ def ingest_gee(
     typer.echo(f"gee.{layer} res={resolution}: {n:,} rows")
 
 
+@ingest_app.command("gee-all")
+def ingest_gee_all(
+    resolution: int = typer.Option(7, "--res"),
+    fresh: bool = typer.Option(False, "--fresh", help="Bypass skip-if-recent guard."),
+) -> None:
+    """Run EVERY GEE layer in a single process (avoids 7× subprocess startup).
+
+    Per-layer skip-if-recent + per-chunk Parquet cache still apply.
+    """
+    from app.ingest.gee import ingest_all
+
+    results = ingest_all(resolution=resolution, fresh=fresh)
+    for layer, n in results.items():
+        suffix = " (skipped or empty)" if n == 0 else ""
+        typer.echo(f"gee.{layer} res={resolution}: {n:,} rows{suffix}")
+
+
 @ingest_app.command("osm")
 def ingest_osm(
     layer: str = typer.Option(..., help="power|highways|water|railways"),

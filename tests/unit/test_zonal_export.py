@@ -111,6 +111,7 @@ def test_run_zonal_export_caches_chunks_on_disk(tmp_path, monkeypatch):
         export_name="demo",
         scale_m=30,
         chunk_size=2,
+        max_workers=1,   # serial execution for deterministic ordering in tests
     )
 
     assert sorted(df.h3_id) == ["c1", "c2", "c3"]
@@ -132,3 +133,92 @@ def test_run_zonal_export_caches_chunks_on_disk(tmp_path, monkeypatch):
     )
     fake_reduced.getInfo.assert_not_called()
     assert len(df2) == 3
+
+
+def test_run_zonal_export_parallel_preserves_chunk_order(tmp_path, monkeypatch):
+    """Parallel chunks complete out of order but the final DataFrame must be
+    sorted by chunk index (= sorted by h3_id since cells are pulled ORDER BY h3_id).
+    """
+    # Three chunks of one cell each. The mocked getInfo returns instantly so
+    # ThreadPoolExecutor easily reorders completion.
+    cells = [
+        ("aaa", "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))"),
+        ("bbb", "POLYGON((1 1, 2 1, 2 2, 1 2, 1 1))"),
+        ("ccc", "POLYGON((2 2, 3 2, 3 3, 2 3, 2 2))"),
+    ]
+
+    def fake_iter_cells(resolution, chunk_size):
+        for c in cells:
+            yield [c]
+
+    fake_cache = tmp_path / "demo" / "res7"
+
+    # Each chunk index → its h3_id row in the response. Map by call args
+    # so order-of-completion doesn't matter.
+    call_log: list[str] = []
+
+    def make_reduced(captured_h3_ids):
+        m = MagicMock()
+        m.map.return_value = m
+
+        def getinfo():
+            return {
+                "features": [
+                    {"properties": {"h3_id": h3, "v": 0.5}} for h3 in captured_h3_ids
+                ]
+            }
+
+        m.getInfo.side_effect = getinfo
+        return m
+
+    # Rebind ee.Feature so each construction appends the h3_id to call_log;
+    # before getInfo runs we drain the log into the response.
+    def fake_feature(geom, props):
+        call_log.append(props["h3_id"])
+        return MagicMock()
+
+    fake_reduced = MagicMock()
+    fake_reduced.map.return_value = fake_reduced
+
+    captured_per_call: list[list[str]] = []
+
+    def fake_getinfo():
+        # Drain call_log into this batch.
+        captured_per_call.append(list(call_log))
+        h3s = call_log.copy()
+        call_log.clear()
+        return {"features": [{"properties": {"h3_id": h, "v": 0.7}} for h in h3s]}
+
+    fake_reduced.getInfo.side_effect = fake_getinfo
+
+    fake_image = MagicMock()
+    fake_image.select.return_value.reduceRegions.return_value = fake_reduced
+    fake_image.reduceRegions.return_value = fake_reduced
+
+    monkeypatch.setattr("app.ingest.gee.zonal_export.init_ee", lambda: None)
+    monkeypatch.setattr("app.ingest.gee.zonal_export._iter_cell_chunks", fake_iter_cells)
+    monkeypatch.setattr(
+        "app.ingest.gee.zonal_export._cache_dir_for",
+        lambda n, r: (fake_cache.mkdir(parents=True, exist_ok=True) or fake_cache),
+    )
+    monkeypatch.setattr(
+        "app.ingest.gee.zonal_export._wkt_polygon_to_ee_geometry",
+        lambda wkt: MagicMock(),
+    )
+    monkeypatch.setattr("app.ingest.gee.zonal_export.ee.Feature", fake_feature)
+    monkeypatch.setattr("app.ingest.gee.zonal_export.ee.FeatureCollection", MagicMock())
+
+    df = run_zonal_export(
+        image=fake_image,
+        reducer=MagicMock(),
+        band_names=[],
+        resolution=7,
+        export_name="demo",
+        scale_m=30,
+        chunk_size=1,
+        max_workers=4,
+    )
+    # Even with parallel completion, the final DataFrame iterates
+    # chunk_paths in index order, so h3_ids come back in their original
+    # h3_cells_res7-ordered position.
+    assert list(df.h3_id) == ["aaa", "bbb", "ccc"]

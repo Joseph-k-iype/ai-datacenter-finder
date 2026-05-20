@@ -38,14 +38,8 @@ gee-auth: ## Authenticate Google Earth Engine user credentials
 push-grid-to-gee: ## OPTIONAL: upload h3 cells to GEE as an asset (not used by default ingest)
 	$(DC) grid push-to-gee --res 7 --chunk-size 5000
 
-ingest-gee: ## Ingest all GEE raster layers (skips per-source if recent; FRESH=1 to force)
-	$(DC) ingest gee --layer seismic $(FRESH_FLAG)
-	$(DC) ingest gee --layer flood $(FRESH_FLAG)
-	$(DC) ingest gee --layer slope $(FRESH_FLAG)
-	$(DC) ingest gee --layer landcover $(FRESH_FLAG)
-	$(DC) ingest gee --layer solar $(FRESH_FLAG)
-	$(DC) ingest gee --layer climate $(FRESH_FLAG)
-	$(DC) ingest gee --layer population $(FRESH_FLAG)
+ingest-gee: ## Ingest all GEE raster layers in one process (parallel chunks; FRESH=1 to force)
+	$(DC) ingest gee-all $(FRESH_FLAG)
 
 ingest-osm: ## Ingest all OSM vector layers
 	$(DC) ingest osm --layer power --with-topology $(FRESH_FLAG)
