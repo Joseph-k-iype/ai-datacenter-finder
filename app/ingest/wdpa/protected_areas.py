@@ -17,7 +17,7 @@ from shapely.geometry import shape
 from app.core.config import load_pipeline_config
 from app.core.logging import get_logger
 from app.governance.contracts import get_contract, schema_hash
-from app.governance.lineage import ingestion_run
+from app.governance.lineage import ingestion_run, should_skip
 from app.ingest.base import validate_and_split
 from app.ingest.gee.client import init_ee
 from app.ingest.osm._writers import insert_rows, truncate
@@ -43,7 +43,16 @@ def _geometry_dict_to_wkt(geom: dict | str | None) -> str:
         return ""
 
 
-def ingest_wdpa(india_only: bool = True, page_size: int = PAGE_SIZE_DEFAULT) -> int:
+def ingest_wdpa(
+    india_only: bool = True,
+    page_size: int = PAGE_SIZE_DEFAULT,
+    *,
+    fresh: bool = False,
+) -> int:
+    if existing := should_skip("wdpa", fresh=fresh):
+        log.info("ingest.skip_recent", source="wdpa", existing_run_id=str(existing))
+        return 0
+
     init_ee()
     cfg = load_pipeline_config()
     asset = cfg["gee"]["layers"]["wdpa"]

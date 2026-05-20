@@ -111,11 +111,16 @@ def grid_push_to_gee(
 def ingest_gee(
     layer: str = typer.Option(..., help="seismic|flood|slope|landcover|solar|climate|population"),
     resolution: int = typer.Option(7, "--res"),
+    fresh: bool = typer.Option(
+        False,
+        "--fresh",
+        help="Bypass the skip-if-recent guard and re-run even if a recent success exists.",
+    ),
 ) -> None:
     """Run GEE zonal-stats ingestion for one layer."""
     from app.ingest.gee import dispatch
 
-    n = dispatch(layer=layer, resolution=resolution)
+    n = dispatch(layer=layer, resolution=resolution, fresh=fresh)
     typer.echo(f"gee.{layer} res={resolution}: {n:,} rows")
 
 
@@ -123,31 +128,36 @@ def ingest_gee(
 def ingest_osm(
     layer: str = typer.Option(..., help="power|highways|water|railways"),
     with_topology: bool = typer.Option(False, "--with-topology"),
+    fresh: bool = typer.Option(False, "--fresh", help="Bypass skip-if-recent guard."),
 ) -> None:
     """Run OSM Overpass ingestion for one layer."""
     from app.ingest.osm import dispatch
 
-    n = dispatch(layer=layer, with_topology=with_topology)
+    n = dispatch(layer=layer, with_topology=with_topology, fresh=fresh)
     typer.echo(f"osm.{layer}: {n:,} rows")
 
 
 @ingest_app.command("wdpa")
-def ingest_wdpa(india_only: bool = typer.Option(True, "--india-only/--no-india-only")) -> None:
+def ingest_wdpa(
+    india_only: bool = typer.Option(True, "--india-only/--no-india-only"),
+    fresh: bool = typer.Option(False, "--fresh", help="Bypass skip-if-recent guard."),
+) -> None:
     """Ingest WDPA protected areas via GEE."""
     from app.ingest.wdpa.protected_areas import ingest_wdpa as run
 
-    n = run(india_only=india_only)
+    n = run(india_only=india_only, fresh=fresh)
     typer.echo(f"wdpa: {n:,} rows")
 
 
 @ingest_app.command("static")
 def ingest_static(
     layer: str = typer.Option(..., help="cable-landings|metros"),
+    fresh: bool = typer.Option(False, "--fresh", help="Bypass skip-if-recent guard."),
 ) -> None:
     """Load curated static datasets."""
     from app.ingest.static import dispatch
 
-    n = dispatch(layer=layer)
+    n = dispatch(layer=layer, fresh=fresh)
     typer.echo(f"static.{layer}: {n:,} rows")
 
 

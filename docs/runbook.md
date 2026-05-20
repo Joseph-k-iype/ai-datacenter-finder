@@ -56,19 +56,26 @@ make build-grid               # ~1 min for res 6+7
 # pipeline ships cells inline per chunk from Postgres. It's preserved as
 # an optional command for users who want the published-asset pattern.
 
-# 7. Ingest everything
-make ingest-all               # 30-60 min total
-# This runs:
-#   - 7 GEE zonal exports (poll asynchronously)
-#   - 5 OSM Overpass queries (cached on disk)
-#   - WDPA polygons via GEE
+# 6. Ingest everything
+make ingest-all               # 30-60 min on first run; seconds on repeats
+# IDEMPOTENT by source: each layer checks ingestion_runs for a recent
+# successful run (default TTL 24h; see configs/pipeline.yml::ingestion).
+# To force a fresh re-ingest:
+#   make ingest-fresh-all                    # all sources
+#   make ingest-all FRESH=1                  # equivalent
+#   dc ingest gee --layer flood --fresh      # single source
+#
+# First-run cost breakdown:
+#   - 7 GEE zonal exports (chunked sync → Parquet cache under data/interim/gee/)
+#   - 5 OSM Overpass queries (cached on disk by query hash)
+#   - WDPA polygons via paginated GEE getInfo
 #   - Static cable landings + metros
 
 # 7. Validate
 make validate                 # schema contracts + DQ checks
 # Read the output; any errors should be addressed before scoring.
 
-# 8. Compute features
+# 8. Compute features  
 make compute-features         # ~10 min for res 6 + res 7
 
 # 9. Score

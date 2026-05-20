@@ -4,14 +4,21 @@ from __future__ import annotations
 import pandas as pd
 
 from app.core.config import load_sources
+from app.core.logging import get_logger
 from app.governance.contracts import get_contract, schema_hash
-from app.governance.lineage import ingestion_run
+from app.governance.lineage import ingestion_run, should_skip
 from app.ingest.base import validate_and_split
 from app.ingest.osm import overpass
 from app.ingest.osm._writers import insert_rows, overpass_ways_to_linestrings, truncate
 
+log = get_logger("ingest.osm.railways")
 
-def ingest_railways() -> int:
+
+def ingest_railways(*, fresh: bool = False) -> int:
+    if existing := should_skip("osm.railways", fresh=fresh):
+        log.info("ingest.skip_recent", source="osm.railways", existing_run_id=str(existing))
+        return 0
+
     sources = load_sources()
     q = sources["osm_overpass"]["railways"]["query"]
     contract = get_contract("osm.railways")

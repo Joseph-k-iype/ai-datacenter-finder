@@ -5,13 +5,24 @@ import pandas as pd
 from shapely.geometry import Point
 
 from app.core.config import load_sources
+from app.core.logging import get_logger
 from app.governance.contracts import get_contract, schema_hash
-from app.governance.lineage import ingestion_run
+from app.governance.lineage import ingestion_run, should_skip
 from app.ingest.base import validate_and_split
 from app.ingest.osm._writers import insert_rows, truncate
 
+log = get_logger("ingest.static.cable_landings")
 
-def ingest() -> int:
+
+def ingest(*, fresh: bool = False) -> int:
+    if existing := should_skip("static.cable_landings", fresh=fresh):
+        log.info(
+            "ingest.skip_recent",
+            source="static.cable_landings",
+            existing_run_id=str(existing),
+        )
+        return 0
+
     sources = load_sources()
     raw = sources["cable_landings_in"]
     contract = get_contract("static.cable_landings")

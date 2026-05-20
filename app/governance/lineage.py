@@ -17,10 +17,70 @@ from dataclasses import dataclass, field
 import structlog
 from sqlalchemy import text
 
+from app.core.config import load_pipeline_config
 from app.core.db import session_scope
 from app.core.logging import get_logger
 
 log = get_logger("governance.lineage")
+
+
+def has_recent_success(
+    source: str,
+    *,
+    ttl_hours: int,
+) -> uuid.UUID | None:
+    """Return the run_id of a recent successful run for ``source``, or None.
+
+    Used by the per-layer ``should_skip`` guard to make ingestion idempotent
+    across re-runs: if the same source completed successfully within
+    ``ttl_hours``, the new call returns immediately.
+    """
+    with session_scope() as session:
+        row = session.execute(
+            text(
+                """
+                SELECT run_id FROM dc_india.ingestion_runs
+                WHERE source = :source
+                  AND status = 'success'
+                  AND finished_at IS NOT NULL
+                  AND finished_at > now() - (:hours::text || ' hours')::interval
+                ORDER BY finished_at DESC
+                LIMIT 1
+                """
+            ),
+            {"source": source, "hours": int(ttl_hours)},
+        ).first()
+    if row is None:
+        return None
+    raw = row[0]
+    return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+
+
+def should_skip(
+    source: str,
+    *,
+    fresh: bool,
+    ttl_hours: int | None = None,
+) -> uuid.UUID | None:
+    """Return the existing run_id if this ingest should be skipped.
+
+    Parameters
+    ----------
+    source
+        Logical source identifier (e.g. ``'gee.flood'``, ``'osm.power_lines'``).
+    fresh
+        If True, the user explicitly asked to bypass the skip guard.
+    ttl_hours
+        Override the configured TTL. Default from
+        ``configs/pipeline.yml::ingestion.skip_ttl_hours``.
+    """
+    if fresh:
+        return None
+    if ttl_hours is None:
+        ttl_hours = int(
+            load_pipeline_config().get("ingestion", {}).get("skip_ttl_hours", 24)
+        )
+    return has_recent_success(source, ttl_hours=ttl_hours)
 
 
 @dataclass

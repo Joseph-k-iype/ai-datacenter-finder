@@ -2,37 +2,40 @@
 from __future__ import annotations
 
 
-def dispatch(layer: str, resolution: int = 7) -> int:
-    """Route to the correct GEE ingest module."""
+def dispatch(layer: str, resolution: int = 7, *, fresh: bool = False) -> int:
+    """Route to the correct GEE ingest module.
+
+    ``fresh=True`` bypasses the per-source skip-if-recent guard.
+    """
     from app.ingest.gee.client import init_ee
 
     init_ee()
     if layer == "seismic":
         from app.ingest.gee.seismic import ingest
 
-        return ingest(resolution=resolution)
+        return ingest(resolution=resolution, fresh=fresh)
     if layer == "flood":
         from app.ingest.gee.flood import ingest
 
-        return ingest(resolution=resolution)
+        return ingest(resolution=resolution, fresh=fresh)
     if layer == "slope":
         from app.ingest.gee.slope import ingest
 
-        return ingest(resolution=resolution)
+        return ingest(resolution=resolution, fresh=fresh)
     if layer == "landcover":
         from app.ingest.gee.landcover import ingest
 
-        return ingest(resolution=resolution)
+        return ingest(resolution=resolution, fresh=fresh)
     if layer == "solar":
         from app.ingest.gee.solar import ingest
 
-        return ingest(resolution=resolution)
+        return ingest(resolution=resolution, fresh=fresh)
     if layer == "climate":
         from app.ingest.gee.climate import ingest
 
-        return ingest(resolution=resolution)
+        return ingest(resolution=resolution, fresh=fresh)
     if layer == "population":
         from app.ingest.gee.population import ingest
 
-        return ingest(resolution=resolution)
+        return ingest(resolution=resolution, fresh=fresh)
     raise ValueError(f"Unknown GEE layer: {layer}")

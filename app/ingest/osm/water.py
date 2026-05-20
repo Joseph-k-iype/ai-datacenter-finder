@@ -7,11 +7,14 @@ import pandas as pd
 from shapely.geometry import LineString, Polygon
 
 from app.core.config import load_sources
+from app.core.logging import get_logger
 from app.governance.contracts import get_contract, schema_hash
-from app.governance.lineage import ingestion_run
+from app.governance.lineage import ingestion_run, should_skip
 from app.ingest.base import validate_and_split
 from app.ingest.osm import overpass
 from app.ingest.osm._writers import insert_rows, truncate
+
+log = get_logger("ingest.osm.water")
 
 
 def _element_to_wkt(el: dict[str, Any]) -> tuple[str, str] | None:
@@ -49,7 +52,11 @@ def _classify_kind(tags: dict[str, str]) -> str:
     return mapping.get(w, "lake")
 
 
-def ingest_water() -> int:
+def ingest_water(*, fresh: bool = False) -> int:
+    if existing := should_skip("osm.water_bodies", fresh=fresh):
+        log.info("ingest.skip_recent", source="osm.water_bodies", existing_run_id=str(existing))
+        return 0
+
     sources = load_sources()
     q = sources["osm_overpass"]["water_bodies"]["query"]
     contract = get_contract("osm.water_bodies")

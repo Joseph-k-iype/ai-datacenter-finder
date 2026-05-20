@@ -4,14 +4,21 @@ from __future__ import annotations
 import ee
 
 from app.core.config import load_pipeline_config
+from app.core.logging import get_logger
 from app.governance.contracts import get_contract, schema_hash
-from app.governance.lineage import ingestion_run
+from app.governance.lineage import ingestion_run, should_skip
 from app.ingest.base import validate_and_split
 from app.ingest.gee._common import upsert_zonal
 from app.ingest.gee.zonal_export import run_zonal_export
 
+log = get_logger("ingest.gee.flood")
 
-def ingest(resolution: int = 7) -> int:
+
+def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
+    if existing := should_skip("gee.flood", fresh=fresh):
+        log.info("ingest.skip_recent", source="gee.flood", existing_run_id=str(existing))
+        return 0
+
     cfg = load_pipeline_config()
     asset = cfg["gee"]["layers"]["flood"]
     scale = cfg["gee"]["scale_m"]["flood"]

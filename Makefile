@@ -1,10 +1,15 @@
 .PHONY: help install up down init-db build-grid gee-auth push-grid-to-gee \
-        ingest-all ingest-gee ingest-osm ingest-wdpa ingest-static \
+        ingest-all ingest-fresh-all ingest-gee ingest-osm ingest-wdpa ingest-static \
         validate compute-features score-default serve \
         test test-unit test-integration lint format clean
 
 PYTHON ?= python
 DC ?= uv run python -m app.cli
+
+# Set FRESH=1 on any `make ingest-*` invocation to bypass the skip-if-recent
+# guard. Example:  make ingest-all FRESH=1
+FRESH ?=
+FRESH_FLAG := $(if $(FRESH),--fresh,)
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-22s %s\n", $$1, $$2}'
@@ -33,29 +38,32 @@ gee-auth: ## Authenticate Google Earth Engine user credentials
 push-grid-to-gee: ## OPTIONAL: upload h3 cells to GEE as an asset (not used by default ingest)
 	$(DC) grid push-to-gee --res 7 --chunk-size 5000
 
-ingest-gee: ## Ingest all GEE raster layers (zonal stats per cell)
-	$(DC) ingest gee --layer seismic
-	$(DC) ingest gee --layer flood
-	$(DC) ingest gee --layer slope
-	$(DC) ingest gee --layer landcover
-	$(DC) ingest gee --layer solar
-	$(DC) ingest gee --layer climate
-	$(DC) ingest gee --layer population
+ingest-gee: ## Ingest all GEE raster layers (skips per-source if recent; FRESH=1 to force)
+	$(DC) ingest gee --layer seismic $(FRESH_FLAG)
+	$(DC) ingest gee --layer flood $(FRESH_FLAG)
+	$(DC) ingest gee --layer slope $(FRESH_FLAG)
+	$(DC) ingest gee --layer landcover $(FRESH_FLAG)
+	$(DC) ingest gee --layer solar $(FRESH_FLAG)
+	$(DC) ingest gee --layer climate $(FRESH_FLAG)
+	$(DC) ingest gee --layer population $(FRESH_FLAG)
 
 ingest-osm: ## Ingest all OSM vector layers
-	$(DC) ingest osm --layer power --with-topology
-	$(DC) ingest osm --layer highways
-	$(DC) ingest osm --layer water
-	$(DC) ingest osm --layer railways
+	$(DC) ingest osm --layer power --with-topology $(FRESH_FLAG)
+	$(DC) ingest osm --layer highways $(FRESH_FLAG)
+	$(DC) ingest osm --layer water $(FRESH_FLAG)
+	$(DC) ingest osm --layer railways $(FRESH_FLAG)
 
 ingest-wdpa: ## Ingest WDPA protected areas (India subset)
-	$(DC) ingest wdpa
+	$(DC) ingest wdpa $(FRESH_FLAG)
 
 ingest-static: ## Load curated static lists (cable landings, metros)
-	$(DC) ingest static --layer cable-landings
-	$(DC) ingest static --layer metros
+	$(DC) ingest static --layer cable-landings $(FRESH_FLAG)
+	$(DC) ingest static --layer metros $(FRESH_FLAG)
 
-ingest-all: ingest-gee ingest-osm ingest-wdpa ingest-static ## All ingestion sources
+ingest-all: ingest-gee ingest-osm ingest-wdpa ingest-static ## All ingestion sources (idempotent)
+
+ingest-fresh-all: ## Force re-ingest every source, bypassing the skip-if-recent guard
+	$(MAKE) ingest-all FRESH=1
 
 validate: ## Run schema contracts + DQ checks
 	$(DC) validate

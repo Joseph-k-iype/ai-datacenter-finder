@@ -60,6 +60,12 @@ gee:
     chunk_size: 2000
     tile_scale: 4          # raise to 8 or 16 on "Computed value too large"
 
+ingestion:
+  # Idempotency: if a source has a successful ingestion_runs row whose
+  # finished_at is within this window, the next call skips immediately.
+  # Bypass per-call with `dc ingest ... --fresh` or `make ingest-fresh-all`.
+  skip_ttl_hours: 24
+
 osm:
   # Voltage thresholds for HV transmission ingest. OSM voltage tag is in volts;
   # values in this list are kV. The lowest entry is the inclusion threshold.

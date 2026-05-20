@@ -18,7 +18,7 @@ from app.core.config import load_pipeline_config, load_sources
 from app.core.db import session_scope
 from app.core.logging import get_logger
 from app.governance.contracts import get_contract, schema_hash
-from app.governance.lineage import ingestion_run
+from app.governance.lineage import ingestion_run, should_skip
 from app.ingest.base import validate_and_split
 from app.ingest.osm import overpass
 from app.ingest.osm._writers import (
@@ -55,7 +55,23 @@ def _coerce_int(s: str | None) -> int | None:
         return None
 
 
-def ingest_power(with_topology: bool = False) -> int:
+def ingest_power(with_topology: bool = False, *, fresh: bool = False) -> int:
+    # Power ingests two co-managed sources (lines + substations) — checking
+    # the primary one is sufficient. Topology rebuild still runs if requested.
+    if existing := should_skip("osm.power_lines", fresh=fresh):
+        log.info(
+            "ingest.skip_recent",
+            source="osm.power_lines",
+            existing_run_id=str(existing),
+            note="substations also skipped",
+        )
+        if with_topology:
+            # Topology depends on the existing rows; safe to re-run.
+            from app.ingest.osm.power_topology import label_subgrid_components
+
+            label_subgrid_components()
+        return 0
+
     sources = load_sources()
     pipeline = load_pipeline_config()
     min_kv = int(min(pipeline["osm"]["hv_voltage_kv"]))
