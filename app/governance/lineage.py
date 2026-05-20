@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import text
@@ -34,7 +35,14 @@ def has_recent_success(
     Used by the per-layer ``should_skip`` guard to make ingestion idempotent
     across re-runs: if the same source completed successfully within
     ``ttl_hours``, the new call returns immediately.
+
+    The TTL cutoff is computed in Python (not in SQL) because SQLAlchemy's
+    ``text()`` parser mishandles ``:hours::text || ' hours'`` — the ``::``
+    cast operator next to a bind parameter confuses its colon-escape logic
+    and the parameter never gets substituted. Passing a timestamp directly
+    sidesteps the issue entirely.
     """
+    cutoff = datetime.now(UTC) - timedelta(hours=int(ttl_hours))
     with session_scope() as session:
         row = session.execute(
             text(
@@ -43,12 +51,12 @@ def has_recent_success(
                 WHERE source = :source
                   AND status = 'success'
                   AND finished_at IS NOT NULL
-                  AND finished_at > now() - (:hours::text || ' hours')::interval
+                  AND finished_at > :cutoff
                 ORDER BY finished_at DESC
                 LIMIT 1
                 """
             ),
-            {"source": source, "hours": int(ttl_hours)},
+            {"source": source, "cutoff": cutoff},
         ).first()
     if row is None:
         return None

@@ -5,6 +5,7 @@ We mock ``session_scope`` to avoid touching a real database.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,6 +39,42 @@ def test_has_recent_success_returns_none_when_db_returns_nothing():
         return_value=_fake_session_returning(None),
     ):
         assert has_recent_success("gee.flood", ttl_hours=24) is None
+
+
+def test_has_recent_success_passes_cutoff_timestamp_not_interval_literal():
+    """Regression: the original SQL used ``(:hours::text || ' hours')::interval``
+    which SQLAlchemy mis-parses (the ``::`` cast next to a ``:hours`` bind
+    parameter confuses the colon-escape logic). The fix computes the cutoff
+    in Python and binds it as a timestamp. This test guards against any
+    future regression that puts interval math back into the SQL string.
+    """
+    session = MagicMock()
+    session.execute.return_value.first.return_value = None
+    ctx = MagicMock()
+    ctx.__enter__.return_value = session
+    ctx.__exit__.return_value = False
+
+    before_call = datetime.now(UTC)
+    with patch("app.governance.lineage.session_scope", return_value=ctx):
+        has_recent_success("gee.flood", ttl_hours=24)
+
+    # Inspect the parameters dict — second positional arg of session.execute.
+    _, params = session.execute.call_args.args
+    assert "cutoff" in params, "params should bind a precomputed `cutoff` timestamp"
+    assert "hours" not in params, "params must NOT bind a raw `hours` int (regression)"
+
+    cutoff: datetime = params["cutoff"]
+    assert isinstance(cutoff, datetime)
+    assert cutoff.tzinfo is not None, "cutoff must be tz-aware"
+
+    # The cutoff should be ~24h before now (allow generous slack for test scheduling).
+    delta_hours = (before_call - cutoff).total_seconds() / 3600
+    assert 23.99 <= delta_hours <= 24.01
+
+    # And the SQL text must NOT contain the buggy interval-from-bind pattern.
+    sql_text = str(session.execute.call_args.args[0])
+    assert "::text" not in sql_text
+    assert "hours" not in sql_text.lower() or "ttl" not in sql_text.lower()
 
 
 def test_has_recent_success_accepts_string_uuid_from_psycopg():
