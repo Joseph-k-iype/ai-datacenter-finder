@@ -44,13 +44,20 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
             export_name="slope_srtm",
             scale_m=scale,
         )
-        df = df.rename(
-            columns={
-                "slope_deg_mean": "mean_slope_deg",
-                "slope_deg_max": "max_slope_deg",
-                "slope_deg_p95": "p95_slope_deg",
-            }
-        )[["h3_id", "mean_slope_deg", "max_slope_deg", "p95_slope_deg"]]
+        # GEE reducer.combine(sharedInputs=True) on a single band returns
+        # property keys named by the reducer alone (mean / max / p95),
+        # not band-prefixed (slope_deg_mean / ...). Accept either form
+        # so the cache from older runs still loads cleanly.
+        rename_map = {
+            "mean": "mean_slope_deg",
+            "max": "max_slope_deg",
+            "p95": "p95_slope_deg",
+            "slope_deg_mean": "mean_slope_deg",
+            "slope_deg_max": "max_slope_deg",
+            "slope_deg_p95": "p95_slope_deg",
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        df = df[["h3_id", "mean_slope_deg", "max_slope_deg", "p95_slope_deg"]]
 
         clean, rejected = validate_and_split(
             df, contract, run_id=str(run.run_id), source="gee.slope"
