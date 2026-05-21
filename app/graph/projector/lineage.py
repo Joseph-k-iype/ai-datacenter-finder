@@ -45,7 +45,7 @@ def _project_schema_contracts() -> int:
             rows = session.execute(
                 text(
                     """
-                    SELECT schema_hash, source, version, payload, created_at
+                    SELECT schema_hash, source, version, expected_schema, updated_at
                     FROM dc_india.schema_contracts
                     """
                 )
@@ -59,13 +59,14 @@ def _project_schema_contracts() -> int:
             "schema_hash": r[0],
             "source": r[1],
             "version": r[2],
-            # payload may be JSONB; coerce to string for the graph property
+            # expected_schema is JSONB (Pandera schema); coerce to string
+            # for the graph property since FalkorDB only stores primitives.
             "payload_json": (
                 json.dumps(r[3], default=str)
                 if isinstance(r[3], (dict, list))
                 else (r[3] if r[3] is not None else None)
             ),
-            "created_at": r[4].isoformat() if r[4] is not None else None,
+            "updated_at": r[4].isoformat() if r[4] is not None else None,
         }
         for r in rows
     ]
@@ -75,7 +76,7 @@ def _project_schema_contracts() -> int:
         f"UNWIND $rows AS r "
         f"MERGE (sc:{N.SCHEMA_CONTRACT} {{schema_hash: r.schema_hash}}) "
         f"SET sc.source = r.source, sc.version = r.version, "
-        f"    sc.payload_json = r.payload_json, sc.created_at = r.created_at"
+        f"    sc.payload_json = r.payload_json, sc.updated_at = r.updated_at"
     )
     with batched_write(N.SCHEMA_CONTRACT, payload, batch_size=BATCH) as chunks:
         for chunk in chunks:

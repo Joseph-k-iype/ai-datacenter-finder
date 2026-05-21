@@ -121,12 +121,14 @@ graph:
   # planning per query, not network. Larger batches amortize planner
   # overhead; >10k hits Redis inline-arg limits intermittently.
   batch_size: 5000
-  # Run different-label projectors concurrently. Safe because each
-  # phase writes to disjoint node labels (cells → Cell/State/...,
-  # lineage → IngestionRun/SchemaContract/...). FalkorDB still
-  # serializes individual writes at the graph-key level — this only
-  # parallelizes client-side serialization + Redis pipelining gains.
-  rebuild_workers: 3
+  # Run different-label projectors concurrently. In theory safe because
+  # each phase writes to disjoint node labels (cells → Cell/State/...,
+  # lineage → IngestionRun/SchemaContract/...), but FalkorDB 8.6.x
+  # segfaults inside EnforceUniqueEntity when concurrent MERGEs hit
+  # unique constraints on different labels at the same time. Default
+  # to 1 (serial) until that's fixed upstream; raise to 3 on a patched
+  # build for the measured ~20-30% wall-time gain.
+  rebuild_workers: 1
 
 # Topology-build parameters (sub-grid component labeling). Production
 # deployments may tune the snap radius based on local substation density.

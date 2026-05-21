@@ -117,9 +117,22 @@ def query(cypher: str, params: dict[str, Any] | None = None):
     the GRAPH.QUERY command — otherwise FalkorDB's parser bails. Returns
     the raw FalkorDB ``QueryResult`` — callers should iterate
     ``.result_set`` (list of rows) or read ``.statistics``.
+
+    Retries once on a dropped TCP connection: FalkorDB 8.6.x has been
+    observed to segfault inside EnforceUniqueEntity and auto-restart
+    from RDB within ~1s, leaving our cached client holding a dead
+    socket. A single reconnect-and-retry papers over the brief outage
+    so callers running long batched rebuilds don't have to.
     """
-    g = get_graph()
-    return g.query(cypher, _scrub(params) if params else {})
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    scrubbed = _scrub(params) if params else {}
+    try:
+        return get_graph().query(cypher, scrubbed)
+    except RedisConnectionError:
+        log.warning("graph.query.reconnect")
+        reset_client_cache()
+        return get_graph().query(cypher, scrubbed)
 
 
 def query_rows(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:

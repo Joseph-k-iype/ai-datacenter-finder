@@ -278,8 +278,10 @@ def graph_stats() -> None:
     from app.graph.schema import E, N
 
     nodes = {}
-    for label in vars(N).values():
-        if not isinstance(label, str) or label.startswith("_"):
+    for attr, label in vars(N).items():
+        # Skip dunders like __module__ ("app.graph.schema") whose values
+        # are strings but aren't graph labels — would yield invalid Cypher.
+        if attr.startswith("_") or not isinstance(label, str):
             continue
         try:
             r = query_rows(f"MATCH (n:{label}) RETURN count(n)")
@@ -288,8 +290,8 @@ def graph_stats() -> None:
             nodes[label] = f"error: {exc}"
 
     edges = {}
-    for etype in vars(E).values():
-        if not isinstance(etype, str) or etype.startswith("_"):
+    for attr, etype in vars(E).items():
+        if attr.startswith("_") or not isinstance(etype, str):
             continue
         try:
             r = query_rows(f"MATCH ()-[r:{etype}]->() RETURN count(r)")

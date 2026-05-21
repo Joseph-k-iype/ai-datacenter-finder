@@ -42,7 +42,7 @@ def _project_scoring_runs() -> int:
                 text(
                     """
                     SELECT score_run_id, weights_id, weights_payload,
-                           started_at, finished_at, cell_count, resolution
+                           started_at, finished_at, cells_scored, resolution
                     FROM dc_india.scoring_runs
                     """
                 )
@@ -57,7 +57,7 @@ def _project_scoring_runs() -> int:
             "weights_id": r[1],
             "started_at": r[3].isoformat() if r[3] is not None else None,
             "finished_at": r[4].isoformat() if r[4] is not None else None,
-            "cell_count": int(r[5]) if r[5] is not None else 0,
+            "cells_scored": int(r[5]) if r[5] is not None else 0,
             "resolution": int(r[6]) if r[6] is not None else 7,
         }
         for r in rows
@@ -69,7 +69,7 @@ def _project_scoring_runs() -> int:
         f"UNWIND $rows AS r "
         f"MERGE (sr:{N.SCORING_RUN} {{score_run_id: r.score_run_id}}) "
         f"SET sr.weights_id = r.weights_id, sr.started_at = r.started_at, "
-        f"    sr.finished_at = r.finished_at, sr.cell_count = r.cell_count, "
+        f"    sr.finished_at = r.finished_at, sr.cells_scored = r.cells_scored, "
         f"    sr.resolution = r.resolution",
         {"rows": run_rows},
     )
@@ -211,7 +211,7 @@ def hook_after_scoring_run(score_run_id: str, resolution: int) -> dict[str, int]
             text(
                 """
                 SELECT score_run_id, weights_id, weights_payload,
-                       started_at, finished_at, cell_count, resolution
+                       started_at, finished_at, cells_scored, resolution
                 FROM dc_india.scoring_runs
                 WHERE score_run_id = :sid
                 """
@@ -226,7 +226,7 @@ def hook_after_scoring_run(score_run_id: str, resolution: int) -> dict[str, int]
     query(
         f"MERGE (sr:{N.SCORING_RUN} {{score_run_id: $sid}}) "
         f"SET sr.weights_id = $wid, sr.started_at = $started, "
-        f"    sr.finished_at = $finished, sr.cell_count = $cnt, "
+        f"    sr.finished_at = $finished, sr.cells_scored = $cnt, "
         f"    sr.resolution = $res",
         {
             "sid": str(r[0]),

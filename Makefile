@@ -84,7 +84,12 @@ score-tier4: ## Score with Tier-4 heavy redundancy weights, then drill down to r
 	$(MAKE) drilldown
 
 serve: ## Launch Streamlit on :8501
-	uv run streamlit run app/ui/streamlit_app.py
+	# PYTHONPATH guards against macOS flagging uv-installed .pth files as
+	# hidden — Python's site.py then skips them and the editable install
+	# of `app` never lands on sys.path, so `streamlit run` can't import
+	# `app`. Forcing the project root onto sys.path here makes it work
+	# regardless of the .pth state.
+	PYTHONPATH="$(CURDIR):$$PYTHONPATH" uv run streamlit run app/ui/streamlit_app.py
 
 graph-up: ## Bring up FalkorDB only
 	docker compose up -d falkordb
