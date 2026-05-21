@@ -105,9 +105,11 @@ power_topology:
   substation_snap_deg: 0.009         # spatial-index pre-filter radius
 
 # Data-quality row-count expectations. Trigger warnings outside these bounds.
+# Bounds reflect motorway + trunk for highways (~150k rows); the original
+# 100k upper bound was for motorway-only.
 dq_row_count_bounds:
   h3_cells_res6:    [60000, 200000]
   h3_cells_res7:    [400000, 1500000]
   raw_power_lines:  [5000, 200000]
-  raw_highways:     [1000, 100000]
+  raw_highways:     [1000, 250000]
   raw_water_bodies: [1000, 500000]

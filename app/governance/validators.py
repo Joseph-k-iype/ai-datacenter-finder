@@ -124,10 +124,30 @@ def check_null_geometries() -> list[CheckResult]:
 
 
 def check_dlq_volume() -> list[CheckResult]:
-    """Flag any source whose DLQ has nontrivial volume."""
+    """Flag any source whose *current* DLQ has nontrivial volume.
+
+    "Current" = rows tied to the latest successful ingestion_run per
+    source. Otherwise old runs from before a contract widening would
+    pollute the check forever, even after a clean re-ingest.
+    """
     with session_scope() as session:
         rows = session.execute(
-            text("SELECT source, COUNT(*) FROM dc_india.dead_letter_queue GROUP BY source")
+            text(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (source) source, run_id
+                    FROM dc_india.ingestion_runs
+                    WHERE status = 'success'
+                    ORDER BY source, finished_at DESC
+                )
+                SELECT l.source, COUNT(d.dlq_id)
+                FROM latest l
+                LEFT JOIN dc_india.dead_letter_queue d
+                  ON d.run_id = l.run_id AND d.source = l.source
+                GROUP BY l.source
+                HAVING COUNT(d.dlq_id) > 0
+                """
+            )
         ).all()
     out: list[CheckResult] = []
     for source, n in rows:
@@ -144,7 +164,15 @@ def check_dlq_volume() -> list[CheckResult]:
 
 
 def run_all_checks() -> dict[str, Any]:
-    """Run every check, persist results, return summary."""
+    """Run every check, persist results, return summary.
+
+    Self-registers every contract first so ``check_schema_contracts``
+    has something to compare against. Without this, a fresh DB would
+    fail every schema_hash check because nothing was ever stored.
+    """
+    # Idempotent — only writes/updates rows.
+    register_all_contracts()
+
     checks: list[CheckResult] = []
     checks.extend(check_row_counts())
     checks.extend(check_schema_contracts())

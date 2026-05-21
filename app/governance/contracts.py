@@ -192,7 +192,11 @@ zonal_landcover_schema = DataFrameSchema(
 zonal_solar_schema = DataFrameSchema(
     {
         "h3_id": Column(pa.String),
-        "pvout_kwh_per_kwp": Column(pa.Float, Check.in_range(800.0, 2500.0), nullable=True),
+        # Lower bound widened from 800 → 400 because shadowed Himalayan
+        # cells and persistently overcast Northeast cells legitimately
+        # fall below 800 kWh/kWp/yr. Upper bound stays at 2500 (≈ Rajasthan
+        # peak with optimal-tilt PVOUT).
+        "pvout_kwh_per_kwp": Column(pa.Float, Check.in_range(400.0, 2500.0), nullable=True),
         "ghi_kwh_per_m2": Column(pa.Float, nullable=True),
     },
     strict=False, coerce=True,
@@ -201,7 +205,10 @@ zonal_solar_schema = DataFrameSchema(
 zonal_climate_schema = DataFrameSchema(
     {
         "h3_id": Column(pa.String),
-        "mean_temp_c": Column(pa.Float, Check.in_range(-10.0, 50.0), nullable=True),
+        # Lower bound widened from -10 → -30 because Himalayan high-
+        # altitude cells (Ladakh, Spiti, Sikkim, Arunachal) have legitimate
+        # annual mean temperatures in the -15 to -25 °C range.
+        "mean_temp_c": Column(pa.Float, Check.in_range(-30.0, 50.0), nullable=True),
         "mean_rh_pct": Column(pa.Float, Check.in_range(0.0, 100.0), nullable=True),
     },
     strict=False, coerce=True,
