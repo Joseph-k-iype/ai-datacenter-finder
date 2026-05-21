@@ -41,7 +41,15 @@ def compute_features(*, resolution: int, kind: str = "all", top_n: int | None = 
                 )
             ).scalar_one_or_none()
         if latest is None:
-            raise RuntimeError("No scoring_runs row yet; score res-7 before drilling down.")
+            # No scoring run yet → no top-N to drill down on. Skip cleanly
+            # so the Makefile's compute-features → score → drilldown order
+            # doesn't fail on first-time setups. The user runs the
+            # drilldown step again *after* `make score-default`.
+            log.warning(
+                "features.build.res8_skipped_no_scores",
+                note="Run `dc score` first; then re-run res-8 features.",
+            )
+            return 0
         populate_drilldown_cells(str(latest), top_n=top_n)
 
     total = 0

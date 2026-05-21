@@ -1,7 +1,7 @@
 .PHONY: help install up down init-db build-grid gee-auth push-grid-to-gee \
         ingest-all ingest-fresh-all ingest-gee ingest-osm ingest-wdpa ingest-static \
         ingest-stakeholder \
-        validate compute-features score-default serve \
+        validate compute-features drilldown score-default score-tier4 serve \
         graph-up graph-rebuild graph-stats graph-parity \
         test test-unit test-integration test-graph lint format clean
 
@@ -68,16 +68,20 @@ ingest-fresh-all: ## Force re-ingest every source, bypassing the skip-if-recent 
 validate: ## Run schema contracts + DQ checks
 	$(DC) validate
 
-compute-features: ## res-6 exclusion → res-7 scoring features → res-8 drill-down
+compute-features: ## res-6 exclusion + res-7 full features (run BEFORE scoring)
 	$(DC) features compute --res 6 --kind exclusion
 	$(DC) features compute --res 7 --kind all
+
+drilldown: ## res-8 features for children of top-N res-7 cells (run AFTER scoring)
 	$(DC) features compute --res 8 --kind all --top-n 200
 
-score-default: ## Score with default weights
+score-default: ## Score with default weights, then drill down to res-8
 	$(DC) score --weights configs/weights/default.yml --res 7
+	$(MAKE) drilldown
 
-score-tier4: ## Score with Tier-4 heavy redundancy weights
+score-tier4: ## Score with Tier-4 heavy redundancy weights, then drill down to res-8
 	$(DC) score --weights configs/weights/tier4_focused.yml --res 7
+	$(MAKE) drilldown
 
 serve: ## Launch Streamlit on :8501
 	uv run streamlit run app/ui/streamlit_app.py

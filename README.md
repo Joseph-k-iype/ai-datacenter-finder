@@ -95,8 +95,10 @@ make ingest-all                         # 7 GEE layers + 5 OSM layers + WDPA + c
 
 # 4. Validate & score
 make validate                           # schema contracts + DQ checks
-make compute-features                   # exclusion → distances → redundancy → coverage
-make score-default                      # produces scores_res7 + top_sites_res7
+make compute-features                   # res-6 exclusion + res-7 full features
+make score-default                      # res-7 scores + top_sites_res7;
+                                        # auto-runs `make drilldown` (res-8 features
+                                        # for children of top-N res-7 cells)
 
 # 5. Knowledge graph (optional but recommended — powers Resilience /
 #    Provenance / Stakeholder UI pages and the cascade-failure queries)
