@@ -97,6 +97,21 @@ scoring:
   top_n_per_state: 5
   distance_cap_km: 500.0   # all KNN distance features clamp here
 
+# Feature-computation parallelism. The redundancy pass (two LATERAL KNN
+# lookups per cell) is the longest in the features stage; chunking by
+# state_code into N concurrent connections multiplies the GiST-index
+# parallelism inside each query.
+features:
+  redundancy:
+    # How many states to process concurrently. Cap at engine pool_size+overflow.
+    parallel_states: 6
+    # Postgres workers per query (set via SET LOCAL inside the session).
+    # Total in-flight workers ≈ parallel_states × pg_workers_per_query.
+    pg_workers_per_query: 4
+  distances:
+    parallel_states: 6
+    pg_workers_per_query: 4
+
 # Topology-build parameters (sub-grid component labeling). Production
 # deployments may tune the snap radius based on local substation density.
 power_topology:
