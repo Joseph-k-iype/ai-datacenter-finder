@@ -17,15 +17,23 @@ from pandera.pandas import Check, Column, DataFrameSchema
 # OSM contracts
 # ----------------------------------------------------------------------------
 
+# NULLABLE INTEGER GOTCHA
+# -----------------------
+# Pandas can't represent ``int64 | NaN`` in the numpy backend — that combo
+# silently becomes float64. ``pa.Int`` / ``pa.Int64`` map to the numpy
+# (non-nullable) types, so pandera's ``coerce=True`` tries to convert a
+# float64-with-NaN series back to int64 and fails for the whole column
+# → every row gets routed to the DLQ.
+#
+# RULE: for any integer column declared ``nullable=True``, use the pandas
+# extension type ``"Int64"`` (capital I) instead. It natively holds
+# integers + ``pd.NA``.
+
 power_lines_schema = DataFrameSchema(
     {
-        "osm_id": Column(pa.Int64, nullable=True),
+        "osm_id": Column("Int64", nullable=True),
         "voltage_kv": Column(pa.Int, Check.ge(220), nullable=False),
         "operator": Column(pa.String, nullable=True),
-        # OSM "circuits" tag is frequently absent — pandas builds the
-        # column as float64 (NaN for nulls). Use the pandas nullable
-        # extension Int64 ("Int64") so coercion accepts NaN-aware data
-        # instead of routing every row to the DLQ.
         "circuits": Column("Int64", nullable=True),
         "wkt": Column(pa.String, nullable=False),
     },
@@ -35,9 +43,9 @@ power_lines_schema = DataFrameSchema(
 
 substations_schema = DataFrameSchema(
     {
-        "osm_id": Column(pa.Int64, nullable=True),
+        "osm_id": Column("Int64", nullable=True),
         "name": Column(pa.String, nullable=True),
-        "voltage_kv": Column(pa.Int, Check.ge(66), nullable=True),
+        "voltage_kv": Column("Int64", Check.ge(66), nullable=True),
         "operator": Column(pa.String, nullable=True),
         "wkt": Column(pa.String, nullable=False),
     },
@@ -47,7 +55,7 @@ substations_schema = DataFrameSchema(
 
 highways_schema = DataFrameSchema(
     {
-        "osm_id": Column(pa.Int64, nullable=True),
+        "osm_id": Column("Int64", nullable=True),
         "ref": Column(pa.String, nullable=True),
         "classification": Column(pa.String, Check.isin(["motorway", "trunk"]), nullable=False),
         "wkt": Column(pa.String, nullable=False),
@@ -58,7 +66,7 @@ highways_schema = DataFrameSchema(
 
 railways_schema = DataFrameSchema(
     {
-        "osm_id": Column(pa.Int64, nullable=True),
+        "osm_id": Column("Int64", nullable=True),
         "wkt": Column(pa.String, nullable=False),
     },
     strict=False,
@@ -67,7 +75,7 @@ railways_schema = DataFrameSchema(
 
 water_bodies_schema = DataFrameSchema(
     {
-        "osm_id": Column(pa.Int64, nullable=True),
+        "osm_id": Column("Int64", nullable=True),
         "name": Column(pa.String, nullable=True),
         "kind": Column(pa.String, Check.isin(["river", "lake", "reservoir", "pond"]), nullable=False),
         "wkt": Column(pa.String, nullable=False),
@@ -81,7 +89,7 @@ water_bodies_schema = DataFrameSchema(
 # ----------------------------------------------------------------------------
 wdpa_schema = DataFrameSchema(
     {
-        "wdpa_id": Column(pa.Int64, nullable=True),
+        "wdpa_id": Column("Int64", nullable=True),
         "name": Column(pa.String, nullable=True),
         "designation": Column(pa.String, nullable=True),
         "iucn_cat": Column(pa.String, nullable=True),
@@ -96,7 +104,7 @@ wdpa_schema = DataFrameSchema(
 # ----------------------------------------------------------------------------
 sez_schema = DataFrameSchema(
     {
-        "osm_id": Column(pa.Int64, nullable=True),
+        "osm_id": Column("Int64", nullable=True),
         "name": Column(pa.String, nullable=True),
         "policy_tag": Column(pa.String, nullable=True),
         "wkt": Column(pa.String, nullable=False),
@@ -107,11 +115,9 @@ sez_schema = DataFrameSchema(
 
 data_centers_schema = DataFrameSchema(
     {
-        "osm_id": Column(pa.Int64, nullable=True),
+        "osm_id": Column("Int64", nullable=True),
         "name": Column(pa.String, nullable=True),
         "company": Column(pa.String, nullable=True),
-        # Pandas nullable Int64 — OSM tier tags are sparse; using numpy
-        # int64 would force every untagged row into the DLQ.
         "tier": Column("Int64", Check.in_range(1, 4), nullable=True),
         "wkt": Column(pa.String, nullable=False),
     },

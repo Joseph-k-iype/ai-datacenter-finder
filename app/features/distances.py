@@ -33,15 +33,22 @@ def _default_cap_km() -> float:
 
 
 _KNN_SQL = """
-    WITH nearest AS (
-        SELECT g.h3_id,
-               ST_DistanceSphere(ST_Centroid(g.geom), t.geom) / 1000.0 AS dist_km
-        FROM dc_india.{grid_table} g
+    WITH cells AS (
+        -- Filter to the state slice BEFORE the lateral. Putting the
+        -- WHERE between FROM and CROSS JOIN is invalid SQL grammar;
+        -- a CTE keeps the state filter scoped + speeds up the join.
+        SELECT h3_id, ST_Centroid(geom) AS centroid
+        FROM dc_india.{grid_table}
         {state_filter}
+    ),
+    nearest AS (
+        SELECT c.h3_id,
+               ST_DistanceSphere(c.centroid, t.geom) / 1000.0 AS dist_km
+        FROM cells c
         CROSS JOIN LATERAL (
             SELECT geom
             FROM dc_india.{target_table}
-            ORDER BY ST_Centroid(g.geom) <-> geom
+            ORDER BY c.centroid <-> geom
             LIMIT 1
         ) t
     )
@@ -63,7 +70,7 @@ def _knn_update_chunk(
 ) -> int:
     grid_table = f"h3_cells_res{resolution}"
     cf_table = f"cell_features_res{resolution}"
-    state_filter = "WHERE g.state_code = :state" if state else ""
+    state_filter = "WHERE state_code = :state" if state else ""
     sql = text(
         _KNN_SQL.format(
             grid_table=grid_table,
