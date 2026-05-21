@@ -246,67 +246,51 @@ def _is_already_exists_error(exc: Exception) -> bool:
 
 
 def ensure_indexes() -> list[str]:
-    """Create all declared indexes + unique constraints. Idempotent.
+    """Create all declared range indexes. Idempotent.
 
-    Two APIs, one per case:
-
-      * Plain index → Cypher ``CREATE INDEX FOR (n:Label) ON (n.prop)``.
-        Works in FalkorDB.
-
-      * Unique constraint → ``graph.create_node_unique_constraint(label,
-        prop)`` Python client call. FalkorDB does NOT accept the
-        Neo4j-5 ``CREATE CONSTRAINT FOR ... REQUIRE ... IS UNIQUE``
-        Cypher syntax (its parser bails with
-        ``Invalid input 'F': expected '=' or CREATE CONSTRAINT ON``).
-
-    FalkorDB also requires an index on the property before a unique
-    constraint can attach — we create the plain index first regardless,
-    then layer the constraint on top when ``unique=True``.
+    Unique constraints are intentionally NOT created: FalkorDB 8.6.x
+    segfaults inside ``EnforceUniqueEntity`` on routine MERGE batches,
+    crashing the server mid-rebuild. The plain range indexes we create
+    here are enough to back our MERGE-by-key idempotency — every
+    projector keys MERGE on a single property that's covered by an
+    index here, so duplicates can't sneak in regardless. Re-enable
+    unique constraints (``g.create_node_unique_constraint``) once a
+    patched FalkorDB build is available.
     """
     from app.graph.schema import INDEXES
 
-    g = get_graph()
     created: list[str] = []
 
     for spec in INDEXES:
-        # Step 1: ensure the underlying range index exists.
         try:
             query(spec.index_cypher())
         except Exception as exc:  # noqa: BLE001
             if not _is_already_exists_error(exc):
                 raise
-
-        # Step 2: layer the unique constraint on top if requested.
-        if spec.unique:
-            try:
-                g.create_node_unique_constraint(spec.label, spec.property)
-            except Exception as exc:  # noqa: BLE001
-                if not _is_already_exists_error(exc):
-                    # Some FalkorDB builds also return a generic
-                    # "pending" / "not supported" message we'd want to
-                    # surface, so don't swallow blindly.
-                    raise
-
-        created.append(
-            f"{spec.label}.{spec.property}{' [unique]' if spec.unique else ''}"
-        )
+        created.append(f"{spec.label}.{spec.property}")
 
     log.info("graph.indexes.ensured", created=created)
     return created
 
 
 def drop_graph() -> None:
-    """Delete the entire graph. Used by ``dc graph rebuild --reset``.
+    """Drop the entire graph key (data + schema + constraints).
 
-    Cheap and atomic in FalkorDB — implemented server-side as a single
-    Redis DEL on the graph key.
+    Used by ``dc graph rebuild --reset``. We need the full key DEL —
+    ``MATCH (n) DETACH DELETE n`` clears nodes but leaves indexes and
+    unique constraints behind, so a subsequent rebuild would still
+    trigger FalkorDB's EnforceUniqueEntity segfault path.
     """
     import contextlib
 
     settings = get_settings()
     with contextlib.suppress(Exception):
         # Graph may not exist yet on first rebuild — swallow that one.
-        query("MATCH (n) DETACH DELETE n")
+        get_graph().delete()
+    # Force the next get_client() call to re-handshake; FalkorDB Python
+    # caches schema state per Graph object and that state is stale once
+    # we DELETE the key.
+    reset_client_cache()
     log.warning("graph.dropped", graph=settings.falkordb_graph)
 
 
