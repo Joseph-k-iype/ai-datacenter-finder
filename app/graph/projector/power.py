@@ -40,12 +40,12 @@ from sqlalchemy import text
 from app.core.config import load_pipeline_config
 from app.core.db import session_scope
 from app.core.logging import get_logger
-from app.graph.client import batched_write, query
+from app.graph.client import batched_write, default_batch_size, query
 from app.graph.schema import E, N
 
 log = get_logger("graph.projector.power")
 
-BATCH = 2000
+BATCH = default_batch_size()
 
 
 def _km_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

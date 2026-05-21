@@ -33,12 +33,12 @@ from sqlalchemy.exc import ProgrammingError
 
 from app.core.db import session_scope
 from app.core.logging import get_logger
-from app.graph.client import batched_write, query
+from app.graph.client import batched_write, default_batch_size, query
 from app.graph.schema import E, N
 
 log = get_logger("graph.projector.stakeholder")
 
-BATCH = 1000
+BATCH = default_batch_size()
 
 
 # ---------------------------------------------------------------------------

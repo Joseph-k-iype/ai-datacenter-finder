@@ -112,6 +112,22 @@ features:
     parallel_states: 6
     pg_workers_per_query: 4
 
+# FalkorDB knowledge-graph projection tunables. The graph is rebuildable
+# from Postgres via `dc graph rebuild`.
+graph:
+  # UNWIND batch size for all MERGE projectors. 5,000 is the measured
+  # sweet spot for pan-India res-7 (~600k cells × ~16 properties).
+  # FalkorDB serializes writes server-side so the bottleneck is server
+  # planning per query, not network. Larger batches amortize planner
+  # overhead; >10k hits Redis inline-arg limits intermittently.
+  batch_size: 5000
+  # Run different-label projectors concurrently. Safe because each
+  # phase writes to disjoint node labels (cells → Cell/State/...,
+  # lineage → IngestionRun/SchemaContract/...). FalkorDB still
+  # serializes individual writes at the graph-key level — this only
+  # parallelizes client-side serialization + Redis pipelining gains.
+  rebuild_workers: 3
+
 # Topology-build parameters (sub-grid component labeling). Production
 # deployments may tune the snap radius based on local substation density.
 power_topology:

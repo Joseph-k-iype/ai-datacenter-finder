@@ -11,6 +11,7 @@ cost on every batch.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from functools import lru_cache
@@ -20,6 +21,41 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 log = get_logger("graph.client")
+
+
+# ---------------------------------------------------------------------------
+# Payload sanitization — FalkorDB's parameter encoder stringifies floats
+# directly. ``float('nan')`` becomes the literal token ``nan`` which the
+# Cypher parser rejects mid-query with ``Invalid input ... expected `…``.
+# Pandas extension types (``pd.NA``, ``pandas.NaT``) compare unequal to
+# themselves, same trick as ``app/governance/dlq.py::_json_safe``.
+# ---------------------------------------------------------------------------
+def _scrub(value: Any) -> Any:
+    """Recursively replace NaN / inf / pd.NA / NaT with None.
+
+    Called on every params dict before passing to FalkorDB. Cheap O(n)
+    walk; the typical payload is a dict ``{"rows": [<list of dicts>]}``
+    so we recurse one level into lists and dicts.
+    """
+    if isinstance(value, dict):
+        return {k: _scrub(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrub(v) for v in value]
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    # Pandas extension scalars: ``pd.NA != pd.NA`` returns ``<NA>``,
+    # and ``bool(<NA>)`` raises TypeError ("boolean value of NA is
+    # ambiguous"). Catch that and treat it as missing — semantically
+    # what the caller meant by including pd.NA in the payload.
+    # numpy NaN compares unequal to itself and yields a True bool.
+    try:
+        if value != value:  # noqa: PLR0124 — NaN self-inequality
+            return None
+    except TypeError:
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -77,11 +113,13 @@ def reset_client_cache() -> None:
 def query(cypher: str, params: dict[str, Any] | None = None):
     """Run a Cypher query against the configured graph.
 
-    Returns the raw FalkorDB ``QueryResult`` — callers should iterate
+    Params are scrubbed of NaN/inf/pd.NA before being stringified into
+    the GRAPH.QUERY command — otherwise FalkorDB's parser bails. Returns
+    the raw FalkorDB ``QueryResult`` — callers should iterate
     ``.result_set`` (list of rows) or read ``.statistics``.
     """
     g = get_graph()
-    return g.query(cypher, params or {})
+    return g.query(cypher, _scrub(params) if params else {})
 
 
 def query_rows(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
@@ -89,12 +127,28 @@ def query_rows(cypher: str, params: dict[str, Any] | None = None) -> list[list[A
     return list(query(cypher, params).result_set)
 
 
+def default_batch_size() -> int:
+    """Tunable batch size for UNWIND projectors.
+
+    5,000 is the sweet spot we've measured against pan-India res-7
+    (~600k cells × ~16 properties). Bigger batches amortize the MERGE
+    planner overhead; beyond ~10k the GRAPH.QUERY command exceeds Redis
+    inline-arg limits and queries start failing intermittently.
+
+    Override per-rebuild via ``configs/pipeline.yml::graph.batch_size``
+    when needed (e.g. lower it on memory-constrained dev boxes).
+    """
+    from app.core.config import load_pipeline_config
+
+    return int(load_pipeline_config().get("graph", {}).get("batch_size", 5000))
+
+
 @contextmanager
 def batched_write(
     label: str,
     rows: Iterable[dict[str, Any]],
     *,
-    batch_size: int = 1000,
+    batch_size: int | None = None,
 ) -> Generator[Iterable[list[dict[str, Any]]], None, None]:
     """Yield successive batches of rows for a Cypher UNWIND projector.
 
@@ -105,9 +159,13 @@ def batched_write(
                       {"rows": chunk})
 
     The context manager only exists to capture timing + log a summary;
-    the actual batching is a plain generator.
+    the actual batching is a plain generator. ``batch_size=None`` (the
+    default) reads from ``configs/pipeline.yml::graph.batch_size``.
     """
     import time
+
+    if batch_size is None:
+        batch_size = default_batch_size()
 
     started = time.monotonic()
     total = 0
@@ -133,6 +191,7 @@ def batched_write(
             label=label,
             rows=total,
             duration_seconds=round(time.monotonic() - started, 2),
+            batch_size=batch_size,
         )
 
 

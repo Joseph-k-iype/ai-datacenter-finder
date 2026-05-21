@@ -24,14 +24,16 @@ from __future__ import annotations
 
 from app.core.db import session_scope
 from app.core.logging import get_logger
-from app.graph.client import batched_write, query
+from app.graph.client import batched_write, default_batch_size, query
 from app.graph.schema import E, N
 
 log = get_logger("graph.projector.cells")
 
-# Batch size tuned for FalkorDB MERGE throughput at ~1k–5k nodes per
-# UNWIND. Larger batches hit pipeline buffer limits on the Redis socket.
-BATCH = 2000
+# Module-level constant kept for backward compatibility but defaults to
+# the config-driven size (configs/pipeline.yml::graph.batch_size). Set
+# only once at import to keep the call sites simple — overriding it on a
+# specific projector means assigning to the local variable per call.
+BATCH = default_batch_size()
 
 
 def _project_states() -> int:
