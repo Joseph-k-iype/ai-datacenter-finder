@@ -22,7 +22,11 @@ power_lines_schema = DataFrameSchema(
         "osm_id": Column(pa.Int64, nullable=True),
         "voltage_kv": Column(pa.Int, Check.ge(220), nullable=False),
         "operator": Column(pa.String, nullable=True),
-        "circuits": Column(pa.Int, nullable=True),
+        # OSM "circuits" tag is frequently absent — pandas builds the
+        # column as float64 (NaN for nulls). Use the pandas nullable
+        # extension Int64 ("Int64") so coercion accepts NaN-aware data
+        # instead of routing every row to the DLQ.
+        "circuits": Column("Int64", nullable=True),
         "wkt": Column(pa.String, nullable=False),
     },
     strict=False,
@@ -106,7 +110,9 @@ data_centers_schema = DataFrameSchema(
         "osm_id": Column(pa.Int64, nullable=True),
         "name": Column(pa.String, nullable=True),
         "company": Column(pa.String, nullable=True),
-        "tier": Column(pa.Int64, Check.in_range(1, 4), nullable=True),
+        # Pandas nullable Int64 — OSM tier tags are sparse; using numpy
+        # int64 would force every untagged row into the DLQ.
+        "tier": Column("Int64", Check.in_range(1, 4), nullable=True),
         "wkt": Column(pa.String, nullable=False),
     },
     strict=False,
