@@ -165,26 +165,60 @@ def health() -> dict[str, Any]:
         }
 
 
-def ensure_indexes() -> list[str]:
-    """Create all declared indexes / unique constraints. Idempotent.
+def _is_already_exists_error(exc: Exception) -> bool:
+    """True if the error message indicates an index/constraint already
+    exists. FalkorDB's wording varies between versions ("already
+    indexed", "constraint already exists", "duplicate")."""
+    msg = str(exc).lower()
+    return any(tok in msg for tok in ("already", "exists", "duplicate"))
 
-    FalkorDB raises if an index already exists; we swallow that one
-    specific failure so this is safe to call on every startup.
+
+def ensure_indexes() -> list[str]:
+    """Create all declared indexes + unique constraints. Idempotent.
+
+    Two APIs, one per case:
+
+      * Plain index → Cypher ``CREATE INDEX FOR (n:Label) ON (n.prop)``.
+        Works in FalkorDB.
+
+      * Unique constraint → ``graph.create_node_unique_constraint(label,
+        prop)`` Python client call. FalkorDB does NOT accept the
+        Neo4j-5 ``CREATE CONSTRAINT FOR ... REQUIRE ... IS UNIQUE``
+        Cypher syntax (its parser bails with
+        ``Invalid input 'F': expected '=' or CREATE CONSTRAINT ON``).
+
+    FalkorDB also requires an index on the property before a unique
+    constraint can attach — we create the plain index first regardless,
+    then layer the constraint on top when ``unique=True``.
     """
     from app.graph.schema import INDEXES
 
+    g = get_graph()
     created: list[str] = []
+
     for spec in INDEXES:
+        # Step 1: ensure the underlying range index exists.
         try:
-            query(spec.create_cypher())
-            created.append(f"{spec.label}.{spec.property}")
+            query(spec.index_cypher())
         except Exception as exc:  # noqa: BLE001
-            msg = str(exc).lower()
-            if "already" in msg or "exists" in msg or "duplicate" in msg:
-                continue
-            # Re-raise unexpected errors — silent failure here masks
-            # real configuration problems (wrong graph name, etc.).
-            raise
+            if not _is_already_exists_error(exc):
+                raise
+
+        # Step 2: layer the unique constraint on top if requested.
+        if spec.unique:
+            try:
+                g.create_node_unique_constraint(spec.label, spec.property)
+            except Exception as exc:  # noqa: BLE001
+                if not _is_already_exists_error(exc):
+                    # Some FalkorDB builds also return a generic
+                    # "pending" / "not supported" message we'd want to
+                    # surface, so don't swallow blindly.
+                    raise
+
+        created.append(
+            f"{spec.label}.{spec.property}{' [unique]' if spec.unique else ''}"
+        )
+
     log.info("graph.indexes.ensured", created=created)
     return created
 

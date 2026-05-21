@@ -72,15 +72,24 @@ class E:
 
 @dataclass(frozen=True)
 class IndexSpec:
+    """Index / constraint declaration for a single (label, property) pair.
+
+    FalkorDB does NOT accept the Neo4j-5 ``CREATE CONSTRAINT FOR ... REQUIRE
+    ... IS UNIQUE`` Cypher syntax. Constraints there are a FalkorDB-native
+    API (``graph.create_node_unique_constraint(label, *props)`` in the
+    Python client). Plain indexes do work as Cypher.
+
+    The ``apply()`` method below dispatches to the right API based on
+    whether ``unique`` is set, so callers just call ``ensure_indexes()``
+    without knowing the difference.
+    """
+
     label: str
     property: str
     unique: bool = False
 
-    def create_cypher(self) -> str:
-        if self.unique:
-            return (
-                f"CREATE CONSTRAINT FOR (n:{self.label}) REQUIRE n.{self.property} IS UNIQUE"
-            )
+    def index_cypher(self) -> str:
+        """Plain (non-unique) range index DDL — works in FalkorDB Cypher."""
         return f"CREATE INDEX FOR (n:{self.label}) ON (n.{self.property})"
 
 

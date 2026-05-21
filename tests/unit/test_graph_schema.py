@@ -44,14 +44,18 @@ def test_indexes_reference_known_labels():
         assert spec.property, f"Index {spec} missing property"
 
 
-def test_index_create_cypher_is_well_formed():
+def test_index_cypher_is_well_formed():
+    """Every IndexSpec yields a FalkorDB-compatible CREATE INDEX statement.
+
+    Unique constraints are NOT Cypher in FalkorDB — they go through the
+    Python client's ``create_node_unique_constraint`` API instead. Here
+    we only verify the underlying range-index Cypher (which is what
+    ``ensure_indexes`` issues first, before layering the constraint on
+    top).
+    """
     for spec in INDEXES:
-        sql = spec.create_cypher()
-        if spec.unique:
-            assert sql.startswith("CREATE CONSTRAINT FOR")
-            assert "IS UNIQUE" in sql
-        else:
-            assert sql.startswith("CREATE INDEX FOR")
+        sql = spec.index_cypher()
+        assert sql.startswith("CREATE INDEX FOR")
         assert spec.label in sql
         assert spec.property in sql
 
