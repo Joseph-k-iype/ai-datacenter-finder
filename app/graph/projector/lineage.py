@@ -148,7 +148,7 @@ def _project_rejected_rows() -> int:
             rows = session.execute(
                 text(
                     """
-                    SELECT dlq_id, run_id, source, error, payload, created_at
+                    SELECT id, run_id, source, error, payload, occurred_at
                     FROM dc_india.dead_letter_queue
                     """
                 )
@@ -159,7 +159,9 @@ def _project_rejected_rows() -> int:
 
     payload: list[dict[str, Any]] = [
         {
-            "dlq_id": str(r[0]),
+            # dlq_id is the graph-side natural key; in Postgres it's the
+            # bigserial `id`. Prefixed so it never collides with osm_id etc.
+            "dlq_id": f"dlq:{r[0]}",
             "run_id": str(r[1]) if r[1] is not None else None,
             "source": r[2],
             # Truncate to a sane upper bound — full payload stays in Postgres.
@@ -169,7 +171,7 @@ def _project_rejected_rows() -> int:
                 if isinstance(r[4], (dict, list))
                 else (str(r[4])[:1000] if r[4] is not None else None)
             ),
-            "created_at": r[5].isoformat() if r[5] is not None else None,
+            "occurred_at": r[5].isoformat() if r[5] is not None else None,
         }
         for r in rows
     ]
@@ -180,7 +182,7 @@ def _project_rejected_rows() -> int:
         f"MERGE (rr:{N.REJECTED_ROW} {{dlq_id: r.dlq_id}}) "
         f"SET rr.source = r.source, rr.error = r.error, "
         f"    rr.payload_preview = r.payload_preview, "
-        f"    rr.created_at = r.created_at"
+        f"    rr.occurred_at = r.occurred_at"
     )
     link_run = (
         f"UNWIND $rows AS r "

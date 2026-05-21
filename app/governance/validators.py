@@ -140,12 +140,12 @@ def check_dlq_volume() -> list[CheckResult]:
                     WHERE status = 'success'
                     ORDER BY source, finished_at DESC
                 )
-                SELECT l.source, COUNT(d.dlq_id)
+                SELECT l.source, COUNT(d.id)
                 FROM latest l
                 LEFT JOIN dc_india.dead_letter_queue d
                   ON d.run_id = l.run_id AND d.source = l.source
                 GROUP BY l.source
-                HAVING COUNT(d.dlq_id) > 0
+                HAVING COUNT(d.id) > 0
                 """
             )
         ).all()
