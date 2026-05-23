@@ -67,6 +67,19 @@ The natural key (`h3_id` for cells, `osm_id` for OSM features,
 `run_id` for ingestion runs) is enforced UNIQUE in `INDEXES`. Re-projecting
 the entire graph from a fresh ingest produces an identical final state.
 
+## Memory bounds
+
+Projectors stream from Postgres to FalkorDB batch-by-batch rather than
+loading the full table into Python. `projector/cells.py` and
+`projector/scoring.py` use `session.execute(...).yield_per(BATCH)`
+and flush each `BATCH` rows to FalkorDB before pulling the next, so
+peak working set per projector is ~`batch_size` × ~16 properties
+(typically <50 MB), not the full ~600 k res-7 cells × props at once.
+
+When adding a new projector that reads a large table, mirror this
+pattern — don't call `.all()` on the cursor and don't accumulate a
+list across the entire scan.
+
 ---
 
 ## Two-mode sync

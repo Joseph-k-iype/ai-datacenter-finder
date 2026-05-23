@@ -44,3 +44,12 @@ For the pan-India dataset:
 
 In-memory footprint: well under 2 GB. Redis snapshot on disk: ~200 MB.
 A laptop runs it fine; production is a single 4 GB container.
+
+## Rebuild memory profile
+
+`dc graph rebuild` reads Postgres in batches (`yield_per(BATCH)`) and
+flushes each batch to FalkorDB before pulling the next, so the
+projector's Python-side working set stays at ~`batch_size` × ~16
+properties (<50 MB) regardless of how many cells the graph contains.
+Tune `configs/pipeline.yml::graph.batch_size` if your FalkorDB build
+benefits from a different chunk size.

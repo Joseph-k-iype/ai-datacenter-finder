@@ -26,8 +26,12 @@ app/
 │   ├── base.py       ← validate_and_split (Pandera → DLQ + clean DF). Used by every adapter.
 │   ├── gee/          ← Google Earth Engine zonal-stat adapters
 │   │   ├── client.py        ← ee.Initialize wrapper (SA preferred, user fallback).
-│   │   ├── zonal_export.py  ← THE driver. reduceRegions → Export.table.toCloudStorage → CSV → DF.
-│   │   ├── _common.py       ← bulk-upsert into raster_zonal_* tables.
+│   │   ├── zonal_export.py  ← THE driver. Streams chunks via on_chunk callback —
+│   │   │                       bounded-pipeline ThreadPoolExecutor caps in-flight
+│   │   │                       requests at max_workers; cells pulled from PG via
+│   │   │                       yield_per. Returns total row count (not a giant DF).
+│   │   ├── _common.py       ← upsert_zonal: streams param rows via itertuples,
+│   │   │                       no full to_dict copy. Safe to call per chunk.
 │   │   ├── seismic.py       ← NASA SEDAC GSHAP PGA → in_zone_v flag.
 │   │   ├── flood.py         ← JRC GSW occurrence + seasonality.
 │   │   ├── slope.py         ← SRTM 30m → mean/max/p95 slope.
@@ -35,6 +39,8 @@ app/
 │   │   ├── solar.py         ← Global Solar Atlas PVOUT (ERA5 fallback).
 │   │   ├── climate.py       ← ERA5-Land mean temp + RH (Magnus formula).
 │   │   └── population.py    ← WorldPop 100m → total + density per km².
+│   │   Every layer wires its post-processing → validate → upsert into an
+│   │   on_chunk callback, so peak memory stays O(chunk_size).
 │   ├── osm/          ← OpenStreetMap Overpass adapters
 │   │   ├── overpass.py        ← rate-limited POST with retry + on-disk cache.
 │   │   ├── _writers.py        ← shared insert/truncate helpers (bulk inserts).
@@ -77,18 +83,20 @@ app/
 │   ├── projector/    ← Postgres → FalkorDB writers (full_rebuild orchestrator + per-slice modules).
 │   └── queries/      ← canonical Cypher (UI + CLI + tests share).
 │
-└── ui/               ← Streamlit + pydeck
-    ├── streamlit_app.py ← landing.
-    ├── _data.py         ← @st.cache_data DB loaders.
-    └── pages/           ← Streamlit auto-discovers numerically-prefixed files.
-        ├── 1_Map.py
-        ├── 2_Tuner.py
-        ├── 3_Site_Detail.py
-        ├── 4_Lineage.py
-        ├── 5_Compare.py
-        ├── 6_Resilience.py   ← outage simulator (FalkorDB-backed)
-        ├── 7_Provenance.py   ← lineage walk + staleness dashboard
-        └── 8_Stakeholder.py  ← operator / SEZ / hyperscaler filters
+└── ui/               ← Single-page Streamlit + kepler.gl
+    ├── streamlit_app.py ← Whole app: kepler.gl H3 choropleth, top-N
+    │                       callouts with per-site reasoning, drill-into-
+    │                       site breakdown panel, score histogram + per-
+    │                       state stats. Sidebar: state filter, min-score
+    │                       slider, top-N count, HV-grid overlay toggle,
+    │                       scoring-run picker.
+    ├── _data.py          ← @st.cache_data Postgres loaders + the
+    │                       reasoning_sentence()/summarise_breakdown()
+    │                       helpers that explain why a site scored where
+    │                       it did.
+    └── _archive_pages/   ← Previous multi-page implementation preserved
+                            here for reference; NOT loaded by Streamlit
+                            (lives outside the conventional ./pages dir).
 ```
 
 ## Conventions
@@ -106,8 +114,12 @@ app/
 - **Pandera contracts are mandatory.** Add a schema to
   `app/governance/contracts.py::CONTRACTS` before writing a new adapter.
 - **Pure functions in `app/scoring/`.** `score_dataframe` and the
-  `transforms` module must remain side-effect-free; the Streamlit tuner
-  depends on it.
+  `transforms` module must remain side-effect-free; an in-memory rescore
+  panel depends on this purity.
+- **Stream, don't materialize.** When pulling >50k rows from Postgres,
+  use `session.execute(...).yield_per(BATCH)` and process batch-by-batch
+  rather than `.all()`. Same applies to GEE chunks — go through
+  `run_zonal_export(..., on_chunk=...)` so peak RAM stays bounded.
 
 ## Adding a new data layer (the recipe)
 

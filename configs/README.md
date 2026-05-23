@@ -8,7 +8,7 @@ files.
 
 | File | What it controls |
 |---|---|
-| `pipeline.yml` | bbox, H3 resolutions, GEE asset IDs, raster scales, voltage thresholds, topology snap radii, GEE export timing, DQ row-count bounds |
+| `pipeline.yml` | bbox, H3 resolutions, GEE asset IDs, raster scales, voltage thresholds, topology snap radii, GEE chunk/worker sizing (memory-bounded), graph batch size + rebuild workers, DQ row-count bounds |
 | `exclusions.yml` | hard-mask thresholds (PGA, flood %, slope °, landcover %) |
 | `sources.yml` | URLs, Overpass queries (power, highways, water, railways, **sez, data_centers**), curated cable-landings, metros |
 | `weights/default.yml` | balanced scoring weights + transform params |
@@ -40,11 +40,13 @@ gee:
     climate: { start_date: "2023-01-01", end_date: "2024-01-01" }
     population: { year: 2020, country_iso3: "IND" }
   export:
-    file_format: CSV
-    chunk_size: 5000
-    poll_seconds: 30
-    timeout_minutes: 90
-    tile_scale: 4     # raise to 8 or 16 on "Computed value too large"
+    chunk_size: 2500     # cells per reduceRegions call; peak RAM ≈
+                         # max_workers × chunk_size × ~3 KB
+    max_workers: 4       # parallel chunk workers per layer
+    layer_parallelism: 1 # how many layers run concurrently in
+                         # `dc ingest gee-all` (total in-flight =
+                         # layer_parallelism × max_workers)
+    tile_scale: 4        # raise to 8 or 16 on "Computed value too large"
 
 osm:
   hv_voltage_kv: [220, 400, 765, 800]   # lowest entry is inclusion threshold
@@ -140,9 +142,11 @@ transforms:                            # parameters of the smooth normalizers
     cable_weight:    0.5
 ```
 
-The Streamlit Tuner page binds sliders to the `weights:` section and
-recomputes scores live; `transforms:` parameters are tweakable per
-preset but not exposed in the UI for now.
+To compare presets, run `dc score --weights configs/weights/<preset>.yml`
+for each one — every scoring run is logged in `scoring_runs` and
+appears in the run picker at the top of the Streamlit sidebar.
+`transforms:` parameters are tunable per preset but not currently
+exposed in the UI.
 
 ## Adding a new weights preset
 
@@ -150,4 +154,6 @@ preset but not exposed in the UI for now.
 2. Edit the `id:` and `description:` fields.
 3. Adjust weights + transform params.
 4. Run: `dc score --weights configs/weights/<your_id>.yml --res 7`.
-5. Compare in the UI via the Lineage page (each scoring run is logged).
+5. The new run lands in `scoring_runs` and appears in the sidebar run
+   picker — switching to it re-renders the map + reasoning panel against
+   the new weights.

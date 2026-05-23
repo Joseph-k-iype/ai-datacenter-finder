@@ -3,11 +3,16 @@
 ```
 tests/
 ├── conftest.py            ← shared fixtures (pg_container for integration)
-├── unit/                  ← no docker; runs in ~25 s
+├── unit/                  ← 94 tests; no docker; runs in <5 s
 │   ├── test_transforms.py             (scoring normalizers)
 │   ├── test_h3_utils.py               (H3 helpers, no DB)
 │   ├── test_contracts.py              (Pandera schemas)
+│   ├── test_assets.py                 (GEE asset existence helper)
+│   ├── test_india_boundary.py         (GADM L1 loader)
 │   ├── test_redundancy_logic.py       (NetworkX sub-grid components)
+│   ├── test_skip_logic.py             (idempotent ingest skip-if-recent)
+│   ├── test_zonal_export.py           (chunked GEE driver + streaming on_chunk)
+│   ├── test_ingest_all.py             (gee-all orchestrator: serial / parallel)
 │   ├── test_graph_schema.py           (FalkorDB label/edge/index conventions)
 │   ├── test_graph_queries.py          (canonical Cypher queries well-formed)
 │   └── test_stakeholder_classification.py
@@ -72,6 +77,20 @@ Markers (`pyproject.toml`):
   - Two clusters connected to different unconnected substations →
     different components.
   - A bridge cluster collapses two components into one.
+
+- **`test_zonal_export.py`** — chunked GEE driver, all GEE + Postgres
+  calls mocked:
+  - WKT polygon parsing.
+  - Missing-cell handling (ocean tiles → NaN values).
+  - Per-chunk Parquet cache: second run with the same cache must NOT
+    re-call `reduceRegions.getInfo()`.
+  - Parallel execution preserves coverage (every h3_id seen exactly
+    once, even when chunks complete out of order).
+  - Streaming `on_chunk` callback: invoked per chunk, total row count
+    returned — verifies the bounded-memory contract.
+
+- **`test_ingest_all.py`** — `dc ingest gee-all` orchestrator: serial
+  + parallel layer execution, error aggregation, config defaults.
 
 ### Integration (docker required)
 

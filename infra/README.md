@@ -65,6 +65,11 @@ laptop with ≥8 GB RAM:
 | `jit` | on | Big spatial joins benefit. |
 | `log_min_duration_statement` | 1000 ms | Flag any unexpectedly slow query. |
 
+The Python side uses server-side cursors (`session.execute(...).yield_per(N)`)
+for every large scan (graph projectors, ingest readbacks), so Postgres
+doesn't have to buffer the entire result set even when the Python
+side processes it lazily.
+
 For a 32 GB box, scale these up by 4×. For the eventual state-IT
 production handoff, add `pg_stat_statements`, `pgaudit`, and connection
 pooling (PgBouncer) — see `docs/ARCHITECTURE.md` for the upgrade path.

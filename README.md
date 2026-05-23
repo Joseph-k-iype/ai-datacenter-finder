@@ -71,10 +71,11 @@ GIS project per state. **This software collapses it to 30 seconds, country-wide.
   clamps) and a **weighted composite** that the UI tunes live.
 - Picks **diversity-aware top-N per state** (no two recommendations within
   50 km, so a single corridor doesn't dominate).
-- Serves a **Streamlit + pydeck** dark-mode UI with five pages: Map, Weight
-  Tuner (in-memory rescore <500 ms per slider tick), Site Detail (radar
-  breakdown + nearest-infra table), Lineage / DLQ audit, side-by-side
-  Compare.
+- Serves a **single-page kepler.gl + Streamlit** dark-mode UI: interactive
+  H3 choropleth as the centerpiece, top-N callouts with per-site
+  reasoning, drill-into-site breakdown, statistics + per-state aggregates
+  — all on one screen with state filter, score threshold, and HV-grid
+  overlay toggles in the sidebar.
 
 ## Quick start
 
@@ -108,7 +109,9 @@ make graph-stats                        # confirm nodes + edges populated
 make graph-parity                       # nonzero exit on drift > 0.5 %
 
 # 6. Serve
-make serve                              # streamlit on :8501 — 8 pages, last 3 graph-backed
+make serve                              # streamlit on :8501 — single-page kepler.gl UI
+# or, equivalently:
+streamlit run app/ui/streamlit_app.py
 ```
 
 Detailed walkthrough in [`docs/runbook.md`](docs/runbook.md).
@@ -189,13 +192,14 @@ Graph-layer specifics in [`docs/graph_runbook.md`](docs/graph_runbook.md).
                   └──────────────────┬────────────────────┘
                                      │
                   ┌──────────────────▼────────────────────┐
-                  │  STREAMLIT  (dark theme)              │
+                  │  STREAMLIT + kepler.gl  (dark theme)  │
                   │                                       │
-                  │  Map        — H3 choropleth + top-N   │
-                  │  Tuner      — in-memory rescore       │
-                  │  Site detail— radar + nearest infra   │
-                  │  Lineage    — runs / contracts / DLQ  │
-                  │  Compare    — A vs B columns          │
+                  │  Single-page UX:                      │
+                  │   - interactive H3 choropleth         │
+                  │   - top-N callouts w/ reasoning       │
+                  │   - drill-into-site breakdown panel   │
+                  │   - score histogram + per-state stats │
+                  │   - HV-grid overlay toggle            │
                   └───────────────────────────────────────┘
 ```
 
@@ -215,7 +219,8 @@ ai-data-center/
 │   ├── scoring/             ← transforms, algorithm, ranking, funnel
 │   ├── graph/               ← FalkorDB projection (client, schema,
 │   │                          projector/, queries/) — see app/graph/README.md
-│   └── ui/                  ← Streamlit pages + components
+│   └── ui/                  ← Single-page Streamlit + kepler.gl
+│                              (streamlit_app.py, _data.py)
 │
 ├── infra/                   ← Infrastructure (see infra/README.md)
 │   ├── postgis/             ← Dockerfile + SQL migrations 001-007
@@ -229,7 +234,7 @@ ai-data-center/
 │   └── weights/             ← default / tier4_focused / green_focused
 │
 ├── tests/                   ← Tests (see tests/README.md)
-│   ├── unit/                ← 20 tests; no docker required
+│   ├── unit/                ← 94 tests; no docker required
 │   ├── integration/         ← testcontainers; postgis + h3 needed
 │   └── fixtures/
 │
@@ -388,6 +393,18 @@ Test layout: [`tests/README.md`](tests/README.md).
 
 Designed for pan-India scale on commodity hardware:
 
+- **Bounded-memory ingestion.** Every GEE layer streams chunk-by-chunk via
+  an `on_chunk` callback in `app/ingest/gee/zonal_export.py`: cells are
+  pulled from Postgres lazily (`yield_per`), reduceRegions runs in a
+  bounded-pipeline thread pool that caps in-flight chunks at
+  `max_workers`, and each chunk is post-processed → validated →
+  upserted → freed before the next one lands. Peak RAM ≈
+  `max_workers × chunk_size` (~30 MB at defaults), not "all 600k rows ×
+  all 6 layers in memory simultaneously."
+- **Streaming graph projectors.** `app/graph/projector/cells.py` and
+  `scoring.py` read Postgres via `yield_per(BATCH)` and flush each
+  batch to FalkorDB before pulling the next — no full materialisation
+  of the cell table in Python.
 - **Bulk inserts everywhere.** No N+1 loops — `app/core/db.py::bulk_execute`
   wraps SQLAlchemy `text()` with `executemany` semantics; the topology
   UPDATE step uses a temp staging table + JOIN.
@@ -400,11 +417,14 @@ Designed for pan-India scale on commodity hardware:
   ID (avoids the 10 MB request-size cap).
 - **PostGIS KNN (`<->`) on GiST indexes** keeps nearest-neighbor queries
   cheap even at 644 k × millions of features.
-- **In-memory rescore** in the Streamlit Tuner — feature DataFrame is
-  loaded once at app start; slider moves never touch the DB.
+- **Cached UI loads.** Every Postgres read in the Streamlit app is
+  wrapped with `st.cache_data(ttl=300)` so slider moves never re-hit
+  the DB.
 
 Concrete tuning hooks in `infra/tuning/postgresql.conf` (shared_buffers,
-work_mem, parallel workers, JIT).
+work_mem, parallel workers, JIT) and `configs/pipeline.yml::gee.export`
+(chunk_size: 2500, max_workers: 4 — laptop-safe defaults; raise to
+chunk_size 5000 + max_workers 16 on a workstation with 16+ GB free RAM).
 
 ## Roadmap / upgrade paths
 
@@ -417,8 +437,12 @@ work_mem, parallel workers, JIT).
 - **DISCOM tariff layers** + state DC-policy incentive layers for
   cost-adjusted ranking
 - **Lambert-conformal projection** for India to improve distance accuracy
-- **Kepler.gl-native UI** (currently using pydeck `H3HexagonLayer` because
-  `keplergl` JS embed is heavier; pydeck has the same data binding)
+- **Live weight tuning back in the UI** — the previous Tuner page was
+  removed when consolidating to a single page; bring it back as a
+  collapsible side panel that calls `score_dataframe()` on cached features
+- **Selection-aware reasoning** — wire kepler.gl's `onHexagonClick` event
+  into the right panel so clicking any hex (not just the top-N) populates
+  the breakdown
 
 ## Documentation index
 
