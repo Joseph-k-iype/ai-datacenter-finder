@@ -115,48 +115,11 @@ def _project_scoring_runs() -> int:
 
 
 def _project_scores(resolution: int) -> int:
-    try:
-        with session_scope() as session:
-            rows = session.execute(
-                text(
-                    f"""
-                    SELECT h3_id::text, score_run_id, score, breakdown
-                    FROM dc_india.scores_res{resolution}
-                    """
-                )
-            ).all()
-    except ProgrammingError as exc:
-        log.warning(
-            "graph.projector.scoring.scores.missing",
-            resolution=resolution,
-            error=str(exc),
-        )
-        return 0
+    """Stream score rows directly from Postgres into FalkorDB in batches.
 
-    payload = []
-    for r in rows:
-        h3, score_run_id, score, breakdown = r
-        if h3 is None or score_run_id is None or score is None:
-            continue
-        if not isinstance(breakdown, dict):
-            try:
-                breakdown = json.loads(breakdown) if breakdown else {}
-            except (ValueError, TypeError):
-                breakdown = {}
-        payload.append(
-            {
-                "score_key": f"{h3}::{score_run_id}::res{resolution}",
-                "h3_id": h3,
-                "score_run_id": str(score_run_id),
-                "score": float(score),
-                "breakdown_json": json.dumps(breakdown, default=str),
-                "resolution": resolution,
-            }
-        )
-
-    if not payload:
-        return 0
-
+    Avoids materialising the entire scores_res{R} table (~300k rows) into
+    Python at once.
+    """
     upsert = (
         f"UNWIND $rows AS r "
         f"MERGE (s:{N.SCORE} {{score_key: r.score_key}}) "
@@ -178,13 +141,56 @@ def _project_scores(resolution: int) -> int:
         f"      (sr:{N.SCORING_RUN} {{score_run_id: r.score_run_id}}) "
         f"MERGE (s)-[:{E.USES_WEIGHTS}]->(sr)"
     )
-    with batched_write(N.SCORE, payload, batch_size=BATCH) as chunks:
-        for chunk in chunks:
-            query(upsert, {"rows": chunk})
-            query(link_cell, {"rows": chunk})
-            query(link_run, {"rows": chunk})
 
-    return len(payload)
+    total = 0
+    batch: list[dict[str, Any]] = []
+    try:
+        with session_scope() as session:
+            result = session.execute(
+                text(
+                    f"""
+                    SELECT h3_id::text, score_run_id, score, breakdown
+                    FROM dc_india.scores_res{resolution}
+                    """
+                )
+            ).yield_per(BATCH)
+            for r in result:
+                h3, score_run_id, score, breakdown = r
+                if h3 is None or score_run_id is None or score is None:
+                    continue
+                if not isinstance(breakdown, dict):
+                    try:
+                        breakdown = json.loads(breakdown) if breakdown else {}
+                    except (ValueError, TypeError):
+                        breakdown = {}
+                batch.append({
+                    "score_key": f"{h3}::{score_run_id}::res{resolution}",
+                    "h3_id": h3,
+                    "score_run_id": str(score_run_id),
+                    "score": float(score),
+                    "breakdown_json": json.dumps(breakdown, default=str),
+                    "resolution": resolution,
+                })
+                if len(batch) >= BATCH:
+                    query(upsert, {"rows": batch})
+                    query(link_cell, {"rows": batch})
+                    query(link_run, {"rows": batch})
+                    total += len(batch)
+                    batch = []
+    except ProgrammingError as exc:
+        log.warning(
+            "graph.projector.scoring.scores.missing",
+            resolution=resolution,
+            error=str(exc),
+        )
+        return 0
+
+    if batch:
+        query(upsert, {"rows": batch})
+        query(link_cell, {"rows": batch})
+        query(link_run, {"rows": batch})
+        total += len(batch)
+    return total
 
 
 def project_scoring() -> dict[str, int]:

@@ -53,35 +53,38 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
     ) as run:
         wc = ee.ImageCollection(asset).first().select("Map")
 
-        # Build a multiband image, one band per class fraction.
         bands = []
         for name, codes in CLASSES.items():
             bands.append(_make_class_mask(wc, codes).rename(name))
         combined = ee.Image.cat(bands)
 
-        df = run_zonal_export(
+        stats = {"upserted": 0, "rejected": 0}
+
+        def _consume(df) -> None:
+            for name in CLASSES:
+                df[name] = (df[name].astype(float).fillna(0.0) * 100.0).clip(0.0, 100.0)
+            df = df[["h3_id", *CLASSES.keys()]]
+            clean, rejected = validate_and_split(
+                df, contract, run_id=str(run.run_id), source="gee.landcover"
+            )
+            stats["upserted"] += upsert_zonal(
+                df=clean,
+                table="raster_zonal_landcover",
+                resolution=resolution,
+                run_id=str(run.run_id),
+                columns=list(CLASSES.keys()),
+            )
+            stats["rejected"] += rejected
+
+        run_zonal_export(
             image=combined,
             reducer=ee.Reducer.mean(),
             band_names=list(CLASSES.keys()),
             resolution=resolution,
             export_name="landcover_wc",
             scale_m=scale,
+            on_chunk=_consume,
         )
-        # Mean of binary mask × 100 = percentage cover.
-        for name in CLASSES:
-            df[name] = (df[name].astype(float).fillna(0.0) * 100.0).clip(0.0, 100.0)
-        df = df[["h3_id", *CLASSES.keys()]]
-
-        clean, rejected = validate_and_split(
-            df, contract, run_id=str(run.run_id), source="gee.landcover"
-        )
-        n = upsert_zonal(
-            df=clean,
-            table="raster_zonal_landcover",
-            resolution=resolution,
-            run_id=str(run.run_id),
-            columns=list(CLASSES.keys()),
-        )
-        run.row_count = n
-        run.rows_rejected = rejected
-        return n
+        run.row_count = stats["upserted"]
+        run.rows_rejected = stats["rejected"]
+        return stats["upserted"]

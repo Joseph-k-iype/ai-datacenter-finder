@@ -72,38 +72,41 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
             return 0
 
         image = ee.Image(asset)
-        # bandNames cannot be derived without a synchronous eval; we let GEE
-        # carry every reduction column through and rename below.
-        df = run_zonal_export(
+
+        stats = {"upserted": 0, "rejected": 0}
+
+        def _consume(df) -> None:
+            value_cols = [c for c in df.columns if c != "h3_id"]
+            if not value_cols:
+                # No value column → skip this chunk (likely empty reduction).
+                return
+            df = df.rename(columns={value_cols[0]: "pga_g"})[["h3_id", "pga_g"]]
+            df["in_zone_v"] = df["pga_g"] > threshold
+            clean, rejected = validate_and_split(
+                df.drop(columns=["in_zone_v"]),
+                contract,
+                run_id=str(run.run_id),
+                source="gee.seismic",
+            )
+            clean["in_zone_v"] = (clean["pga_g"] > threshold).astype(bool)
+            stats["upserted"] += upsert_zonal(
+                df=clean,
+                table="raster_zonal_seismic",
+                resolution=resolution,
+                run_id=str(run.run_id),
+                columns=["pga_g", "in_zone_v"],
+            )
+            stats["rejected"] += rejected
+
+        run_zonal_export(
             image=image,
             reducer=ee.Reducer.mean(),
             band_names=[],   # empty = pass through all bands
             resolution=resolution,
             export_name="seismic_pga",
             scale_m=scale,
+            on_chunk=_consume,
         )
-        # Normalize: pick the first non-h3_id column as pga_g.
-        value_cols = [c for c in df.columns if c != "h3_id"]
-        if not value_cols:
-            raise RuntimeError(f"Seismic export produced no value column. Columns: {list(df.columns)}")
-        df = df.rename(columns={value_cols[0]: "pga_g"})[["h3_id", "pga_g"]]
-        df["in_zone_v"] = df["pga_g"] > threshold
-
-        clean, rejected = validate_and_split(
-            df.drop(columns=["in_zone_v"]),
-            contract,
-            run_id=str(run.run_id),
-            source="gee.seismic",
-        )
-        clean["in_zone_v"] = (clean["pga_g"] > threshold).astype(bool)
-
-        n = upsert_zonal(
-            df=clean,
-            table="raster_zonal_seismic",
-            resolution=resolution,
-            run_id=str(run.run_id),
-            columns=["pga_g", "in_zone_v"],
-        )
-        run.row_count = n
-        run.rows_rejected = rejected
-        return n
+        run.row_count = stats["upserted"]
+        run.rows_rejected = stats["rejected"]
+        return stats["upserted"]

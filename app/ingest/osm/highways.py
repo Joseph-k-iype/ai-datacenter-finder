@@ -30,8 +30,10 @@ def ingest_highways(*, fresh: bool = False) -> int:
     ) as run:
         truncate("raw_highways")
         raw = overpass.fetch(q)
+        elements = raw.get("elements", [])
+        del raw  # Free the parsed Overpass response (~50-150MB at pan-India scale).
         rows = []
-        for r in overpass_ways_to_linestrings(raw.get("elements", [])):
+        for r in overpass_ways_to_linestrings(elements):
             tags = r["tags"]
             cls = tags.get("highway") or "trunk"
             if cls not in {"motorway", "trunk"}:
@@ -44,7 +46,9 @@ def ingest_highways(*, fresh: bool = False) -> int:
                     "wkt": r["wkt"],
                 }
             )
+        del elements
         df = pd.DataFrame(rows)
+        del rows
         clean, rejected = validate_and_split(
             df, contract, run_id=str(run.run_id), source="osm.highways"
         )

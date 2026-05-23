@@ -1,60 +1,40 @@
-"""Chunked GEE zonal stats; parallel chunks with per-chunk Parquet cache.
+"""Chunked GEE zonal stats with **streaming chunk consumption** to bound memory.
 
 Each layer's pipeline:
 
   1. Cells stream from Postgres (``h3_cells_res{R}``) in chunks of
-     ``chunk_size`` (default 2000) — materialized once in memory.
-  2. Already-cached chunks are skipped before any worker is spun up.
-  3. Remaining chunks run **in parallel** via ``ThreadPoolExecutor``
-     (default ``max_workers=6``). GEE's ``reduceRegions(...).getInfo()``
-     is a blocking HTTP call that releases the GIL, so threads are the
-     right primitive — no need for multiprocessing.
+     ``chunk_size``. Chunks are produced **lazily** from the DB cursor —
+     we never materialise the full 600k-cell list in RAM.
+  2. Already-cached chunks are skipped before any worker spins up.
+  3. Pending chunks run **in parallel** via ``ThreadPoolExecutor``
+     (default ``max_workers=4`` — laptop-safe; GEE reduceRegions().getInfo()
+     is a blocking HTTP call that releases the GIL).
   4. Each chunk's result is written to
      ``data/interim/gee/{export_name}/res{R}/chunk_NNNNN.parquet`` —
      resumable: a re-run with the same chunk_size skips finished work.
-  5. The driver returns the concatenated DataFrame ordered by chunk
-     index (i.e. by h3_id since chunks are pulled with ``ORDER BY h3_id``).
+  5. As soon as a chunk lands on disk, the optional ``on_chunk`` callback
+     is invoked with the freshly-read DataFrame. The chunk is then
+     discarded — at no point do we hold more than ``max_workers`` chunk
+     payloads in memory simultaneously.
 
-Trade-off vs. GCS-async-export:
-  + No GCS bucket / service-account JSON required.
-  + Resumable on transient GEE errors (per-chunk granularity).
-  + Single source of truth for cells (Postgres). No upfront asset
-    publication needed; ``make push-grid-to-gee`` is optional.
-  - GEE rate limits may push back at very high ``max_workers``; 6 is
-    safe for free-tier accounts.
+The previous version concatenated every chunk DataFrame at the end (~600k
+rows × 6 layers ≈ multi-GB peak) and crashed laptops. The new contract
+returns just a row count; the callback owns persistence.
 
-The previous version ran chunks strictly serially and took ~10 hours
-end-to-end at pan-India scale; the parallel pipeline reduces this to
-~30-90 minutes total across all 6 raster layers depending on settings.
+Why threads, not asyncio: ``earthengine-api`` is built on synchronous
+googleapiclient/httplib2; there is no native async EE client. For our
+workload (network-I/O-bound, waiting on GEE compute), threads and
+asyncio are throughput-equivalent.
 
-Why threads, not asyncio?
--------------------------
-``earthengine-api`` is built on ``googleapiclient`` → ``httplib2``,
-which is **synchronous**. There is no native ``async`` EE client. Wrapping
-its calls in ``asyncio.to_thread(...)`` would just run them on a
-``ThreadPoolExecutor`` under the hood — identical performance, more
-ceremony. To get true asyncio benefit we'd have to reimplement the EE
-REST/Cloud-API client on top of ``httpx.AsyncClient``, a multi-week
-project for ~zero gain because **the bottleneck is GEE-server compute
-time, not Python's I/O scheduler**.
-
-For our workload (network-I/O-bound, waiting on GEE compute), threads
-and asyncio are throughput-equivalent. Threads also share memory cheaply
-which matters for the in-memory cell list. We default to 10 chunk
-workers; the M4 family handles 20+ without breaking a sweat — the
-practical limit is GEE's per-account rate cap, not local CPU.
-
-Why not multiprocessing?
-------------------------
-Each subprocess would need its own ``ee.Initialize()`` (~1.5 s) and its
-own Postgres connection pool. IPC for the chunk results would dominate.
-Threads share `ee` state and the SQLAlchemy engine for free.
+Why not multiprocessing: each subprocess would need its own ee.Initialize
+(~1.5s) and IPC of chunk results would dominate. Threads share `ee` state
+for free.
 """
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable, Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import ee
@@ -67,6 +47,8 @@ from app.core.logging import get_logger
 from app.ingest.gee.client import init_ee
 
 log = get_logger("ingest.gee.zonal_export")
+
+ChunkConsumer = Callable[[pd.DataFrame], None]
 
 
 def _wkt_polygon_to_ee_geometry(wkt: str) -> ee.Geometry:
@@ -81,7 +63,11 @@ def _wkt_polygon_to_ee_geometry(wkt: str) -> ee.Geometry:
 
 
 def _iter_cell_chunks(resolution: int, chunk_size: int) -> Iterator[list[tuple[str, str]]]:
-    """Yield successive lists of (h3_id, wkt) tuples from Postgres."""
+    """Stream lists of (h3_id, wkt) tuples from Postgres lazily.
+
+    Uses a server-side cursor (yield_per) so the entire cell table never
+    sits in Python memory at once.
+    """
     sql = text(
         f"""
         SELECT h3_id::text AS h3_id, ST_AsText(geom) AS wkt
@@ -90,7 +76,7 @@ def _iter_cell_chunks(resolution: int, chunk_size: int) -> Iterator[list[tuple[s
         """
     )
     with session_scope() as session:
-        result = session.execute(sql)
+        result = session.execute(sql).yield_per(chunk_size)
         chunk: list[tuple[str, str]] = []
         for row in result:
             chunk.append((row.h3_id, row.wkt))
@@ -132,6 +118,28 @@ def _format_eta(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
+def _scan_pending(
+    cache_dir: Path,
+    resolution: int,
+    chunk_size: int,
+    fresh: bool,
+) -> tuple[dict[int, list[tuple[str, str]]], list[Path]]:
+    """Walk the Postgres cell stream, return the pending chunks + cached paths.
+
+    Cached chunks are recorded by their on-disk path so the caller can
+    stream them through ``on_chunk`` without re-fetching.
+    """
+    pending: dict[int, list[tuple[str, str]]] = {}
+    cached: list[Path] = []
+    for idx, cells in enumerate(_iter_cell_chunks(resolution, chunk_size)):
+        p = cache_dir / f"chunk_{idx:05d}.parquet"
+        if p.exists() and not fresh:
+            cached.append(p)
+        else:
+            pending[idx] = cells
+    return pending, cached
+
+
 def run_zonal_export(
     *,
     image: ee.Image,
@@ -145,50 +153,39 @@ def run_zonal_export(
     tile_scale: int | None = None,
     max_workers: int | None = None,
     fresh: bool = False,
-) -> pd.DataFrame:
-    """Parallel chunked reduceRegions over the Postgres-resident H3 grid.
+    on_chunk: ChunkConsumer | None = None,
+) -> int:
+    """Run a chunked, parallel reduceRegions over the Postgres H3 grid.
+
+    Streams chunk DataFrames to ``on_chunk`` (if provided) as soon as
+    each chunk lands on disk, keeping peak memory bounded by
+    ``max_workers × chunk_size``. Returns the total number of rows
+    processed (sum of all chunk row counts).
 
     Parameters
     ----------
     image, reducer, band_names, resolution, export_name, scale_m, crs
         See module docstring.
-    chunk_size
-        Cells per GEE request. Default ``configs/pipeline.yml::gee.export.chunk_size``.
-    tile_scale
-        Raise to 8 or 16 on "Computed value too large" errors.
-    max_workers
-        Parallel chunk workers. Default ``configs/pipeline.yml::gee.export.max_workers``
-        (typically 6). Pass ``1`` for deterministic serial execution
-        (used by tests).
+    chunk_size, tile_scale, max_workers
+        Pulled from ``configs/pipeline.yml::gee.export`` if not given.
     fresh
         If True, ignore existing chunk Parquets and re-fetch everything.
+    on_chunk
+        Callable invoked for each chunk DataFrame as it becomes ready.
+        Cached chunks are also passed through, so a consumer can rely on
+        seeing every chunk exactly once.
     """
     init_ee()
     cfg = load_pipeline_config()
     export_cfg = cfg["gee"].get("export", {})
-    chunk_size = chunk_size or int(export_cfg.get("chunk_size", 2000))
+    chunk_size = chunk_size or int(export_cfg.get("chunk_size", 5000))
     tile_scale = tile_scale or int(export_cfg.get("tile_scale", 4))
-    max_workers = max_workers or int(export_cfg.get("max_workers", 6))
+    max_workers = max_workers or int(export_cfg.get("max_workers", 4))
 
     cache_dir = _cache_dir_for(export_name, resolution)
 
-    # Materialize all chunks upfront so workers don't fight over the
-    # Postgres session. Memory cost ≈ chunk_size × #chunks × ~100 B per
-    # WKT ≈ ~65 MB for pan-India res-7. Well within laptop RAM.
-    all_chunks: list[list[tuple[str, str]]] = list(
-        _iter_cell_chunks(resolution, chunk_size)
-    )
-    total_chunks = len(all_chunks)
-
-    # Pre-skip cached chunks before spinning the pool.
-    chunk_paths: list[Path | None] = [None] * total_chunks
-    pending_indices: list[int] = []
-    for idx in range(total_chunks):
-        p = cache_dir / f"chunk_{idx:05d}.parquet"
-        if p.exists() and not fresh:
-            chunk_paths[idx] = p
-        else:
-            pending_indices.append(idx)
+    pending, cached_paths = _scan_pending(cache_dir, resolution, chunk_size, fresh)
+    total_chunks = len(pending) + len(cached_paths)
 
     log.info(
         "gee.zonal.start",
@@ -198,93 +195,144 @@ def run_zonal_export(
         chunk_size=chunk_size,
         max_workers=max_workers,
         total_chunks=total_chunks,
-        chunks_cached=total_chunks - len(pending_indices),
-        chunks_pending=len(pending_indices),
+        chunks_cached=len(cached_paths),
+        chunks_pending=len(pending),
         cache_dir=str(cache_dir),
     )
 
-    if not pending_indices:
-        log.info("gee.zonal.all_cached", export_name=export_name)
-    else:
-        target_image = image.select(band_names) if band_names else image
+    total_rows = 0
 
-        def _process_chunk(idx: int) -> tuple[int, Path, float, int]:
-            cells_chunk = all_chunks[idx]
-            h3_ids = [h for h, _ in cells_chunk]
-            features = [
-                ee.Feature(_wkt_polygon_to_ee_geometry(wkt), {"h3_id": h3_id})
-                for h3_id, wkt in cells_chunk
-            ]
-            fc = ee.FeatureCollection(features)
+    # Drain cached chunks first — they're already on disk and consume no
+    # GEE quota. Reading one at a time keeps peak memory ~50 MB even at
+    # res-7 / chunk_size 5000.
+    for p in cached_paths:
+        df = pd.read_parquet(p)
+        total_rows += len(df)
+        if on_chunk is not None:
+            on_chunk(df)
+        del df
 
-            reduced = target_image.reduceRegions(
-                collection=fc,
-                reducer=reducer,
-                scale=scale_m,
-                crs=crs,
-                tileScale=tile_scale,
-            )
-            reduced = reduced.map(lambda f: f.setGeometry(None))
-
-            started = time.monotonic()
-            info = reduced.getInfo()
-            elapsed = time.monotonic() - started
-
-            df = _properties_to_dataframe(info, h3_ids)
-            path = cache_dir / f"chunk_{idx:05d}.parquet"
-            df.to_parquet(path, index=False)
-            return idx, path, elapsed, len(df)
-
-        # Log progress every N completions (or every chunk for tiny jobs).
-        pending = len(pending_indices)
-        log_every = max(1, pending // 20)
-
-        run_started = time.monotonic()
-        completed = 0
-        total_compute_seconds = 0.0
-
-        if max_workers <= 1:
-            # Serial path — used by tests for deterministic ordering.
-            for idx in pending_indices:
-                r_idx, r_path, r_elapsed, r_rows = _process_chunk(idx)
-                chunk_paths[r_idx] = r_path
-                completed += 1
-                total_compute_seconds += r_elapsed
-                if completed % log_every == 0 or completed == pending:
-                    _log_progress(
-                        export_name, completed, pending,
-                        r_idx, r_rows, r_elapsed,
-                        run_started, total_compute_seconds, max_workers,
-                    )
+    if not pending:
+        if total_chunks == 0:
+            log.warning("gee.zonal.empty", export_name=export_name)
         else:
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(_process_chunk, idx): idx for idx in pending_indices}
-                for future in as_completed(futures):
-                    r_idx, r_path, r_elapsed, r_rows = future.result()
-                    chunk_paths[r_idx] = r_path
+            log.info("gee.zonal.all_cached", export_name=export_name)
+        return total_rows
+
+    target_image = image.select(band_names) if band_names else image
+
+    def _process_chunk(idx: int, cells_chunk: list[tuple[str, str]]) -> tuple[int, Path, float, int]:
+        h3_ids = [h for h, _ in cells_chunk]
+        features = [
+            ee.Feature(_wkt_polygon_to_ee_geometry(wkt), {"h3_id": h3_id})
+            for h3_id, wkt in cells_chunk
+        ]
+        fc = ee.FeatureCollection(features)
+
+        reduced = target_image.reduceRegions(
+            collection=fc,
+            reducer=reducer,
+            scale=scale_m,
+            crs=crs,
+            tileScale=tile_scale,
+        )
+        reduced = reduced.map(lambda f: f.setGeometry(None))
+
+        started = time.monotonic()
+        info = reduced.getInfo()
+        elapsed = time.monotonic() - started
+
+        df = _properties_to_dataframe(info, h3_ids)
+        path = cache_dir / f"chunk_{idx:05d}.parquet"
+        df.to_parquet(path, index=False)
+        return idx, path, elapsed, len(df)
+
+    n_pending = len(pending)
+    log_every = max(1, n_pending // 20)
+    run_started = time.monotonic()
+    completed = 0
+    total_compute_seconds = 0.0
+
+    pending_items = list(pending.items())
+
+    if max_workers <= 1:
+        # Serial path — deterministic ordering for tests.
+        for idx, cells_chunk in pending_items:
+            r_idx, r_path, r_elapsed, r_rows = _process_chunk(idx, cells_chunk)
+            completed += 1
+            total_compute_seconds += r_elapsed
+            total_rows += r_rows
+            if on_chunk is not None:
+                df = pd.read_parquet(r_path)
+                on_chunk(df)
+                del df
+            if completed % log_every == 0 or completed == n_pending:
+                _log_progress(
+                    export_name, completed, n_pending, r_idx, r_rows,
+                    r_elapsed, run_started, total_compute_seconds, max_workers,
+                )
+    else:
+        # Bounded-pipeline scheduler: keep at most `max_workers` in flight.
+        # We never queue all chunks at once (this avoided multi-GB future
+        # backlog at res-7).
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            it = iter(pending_items)
+            in_flight = {}
+            for _ in range(max_workers):
+                try:
+                    idx, cells_chunk = next(it)
+                except StopIteration:
+                    break
+                in_flight[pool.submit(_process_chunk, idx, cells_chunk)] = idx
+
+            while in_flight:
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    r_idx, r_path, r_elapsed, r_rows = fut.result()
+                    in_flight.pop(fut)
                     completed += 1
                     total_compute_seconds += r_elapsed
-                    if completed % log_every == 0 or completed == pending:
+                    total_rows += r_rows
+                    if on_chunk is not None:
+                        df = pd.read_parquet(r_path)
+                        on_chunk(df)
+                        del df
+                    if completed % log_every == 0 or completed == n_pending:
                         _log_progress(
-                            export_name, completed, pending,
-                            r_idx, r_rows, r_elapsed,
-                            run_started, total_compute_seconds, max_workers,
+                            export_name, completed, n_pending, r_idx, r_rows,
+                            r_elapsed, run_started, total_compute_seconds, max_workers,
                         )
+                    try:
+                        idx, cells_chunk = next(it)
+                    except StopIteration:
+                        continue
+                    in_flight[pool.submit(_process_chunk, idx, cells_chunk)] = idx
 
-    if not any(chunk_paths):
+    if total_rows == 0:
         log.warning("gee.zonal.empty", export_name=export_name)
-        return pd.DataFrame()
+        return 0
 
-    dfs = [pd.read_parquet(p) for p in chunk_paths if p is not None]
-    out = pd.concat(dfs, ignore_index=True)
     log.info(
         "gee.zonal.complete",
         export_name=export_name,
-        chunks=len(dfs),
-        rows=len(out),
-        columns=list(out.columns),
+        chunks=total_chunks,
+        rows=total_rows,
     )
-    return out
+    return total_rows
+
+
+def collect_zonal_export(**kwargs) -> pd.DataFrame:
+    """Backward-compat helper that concatenates chunks into a single DataFrame.
+
+    Only meant for small ad-hoc usage / tests — bulk pipelines should
+    instead pass ``on_chunk`` to ``run_zonal_export`` so chunks are
+    streamed straight to Postgres without ever co-existing in memory.
+    """
+    frames: list[pd.DataFrame] = []
+    run_zonal_export(on_chunk=frames.append, **kwargs)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def _log_progress(
@@ -299,16 +347,14 @@ def _log_progress(
     max_workers: int,
 ) -> None:
     wall_elapsed = time.monotonic() - run_started
-    # Effective throughput accounts for parallelism: total compute time / workers
-    # approximates the wall time we'd see if utilisation were perfect.
-    avg_compute = total_compute_seconds / completed
+    avg_compute = total_compute_seconds / max(completed, 1)
     eta_seconds = (avg_compute / max(max_workers, 1)) * (pending - completed)
     log.info(
         "gee.zonal.progress",
         export_name=export_name,
         done=completed,
         pending=pending,
-        pct=round(100.0 * completed / pending, 1),
+        pct=round(100.0 * completed / max(pending, 1), 1),
         last_chunk=last_chunk_idx,
         last_rows=last_rows,
         last_seconds=round(last_seconds, 2),

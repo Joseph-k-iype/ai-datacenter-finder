@@ -30,29 +30,36 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
         schema_hash=schema_hash(contract),
     ) as run:
         gsw = ee.Image(asset).select(["occurrence", "seasonality"])
-        df = run_zonal_export(
+
+        stats = {"upserted": 0, "rejected": 0}
+
+        def _consume(df) -> None:
+            df = df.rename(
+                columns={"occurrence": "occurrence_pct", "seasonality": "seasonality"}
+            )[["h3_id", "occurrence_pct", "seasonality"]]
+            df["occurrence_pct"] = df["occurrence_pct"].fillna(0.0).clip(0.0, 100.0)
+            clean, rejected = validate_and_split(
+                df, contract, run_id=str(run.run_id), source="gee.flood"
+            )
+            stats["upserted"] += upsert_zonal(
+                df=clean,
+                table="raster_zonal_flood",
+                resolution=resolution,
+                run_id=str(run.run_id),
+                columns=["occurrence_pct", "seasonality"],
+            )
+            stats["rejected"] += rejected
+
+        run_zonal_export(
             image=gsw,
             reducer=ee.Reducer.mean(),
             band_names=["occurrence", "seasonality"],
             resolution=resolution,
             export_name="flood_gsw",
             scale_m=scale,
+            on_chunk=_consume,
         )
-        df = df.rename(
-            columns={"occurrence": "occurrence_pct", "seasonality": "seasonality"}
-        )[["h3_id", "occurrence_pct", "seasonality"]]
-        df["occurrence_pct"] = df["occurrence_pct"].fillna(0.0).clip(0.0, 100.0)
 
-        clean, rejected = validate_and_split(
-            df, contract, run_id=str(run.run_id), source="gee.flood"
-        )
-        n = upsert_zonal(
-            df=clean,
-            table="raster_zonal_flood",
-            resolution=resolution,
-            run_id=str(run.run_id),
-            columns=["occurrence_pct", "seasonality"],
-        )
-        run.row_count = n
-        run.rows_rejected = rejected
-        return n
+        run.row_count = stats["upserted"]
+        run.rows_rejected = stats["rejected"]
+        return stats["upserted"]

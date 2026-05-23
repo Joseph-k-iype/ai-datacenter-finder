@@ -24,6 +24,15 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
     scale = cfg["gee"]["scale_m"]["slope"]
     contract = get_contract("gee.slope")
 
+    rename_map = {
+        "mean": "mean_slope_deg",
+        "max": "max_slope_deg",
+        "p95": "p95_slope_deg",
+        "slope_deg_mean": "mean_slope_deg",
+        "slope_deg_max": "max_slope_deg",
+        "slope_deg_p95": "p95_slope_deg",
+    }
+
     with ingestion_run(
         source="gee.slope",
         upstream_source=asset,
@@ -36,39 +45,34 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
             .combine(ee.Reducer.max(), sharedInputs=True)
             .combine(ee.Reducer.percentile([95]), sharedInputs=True)
         )
-        df = run_zonal_export(
+
+        stats = {"upserted": 0, "rejected": 0}
+
+        def _consume(df) -> None:
+            df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+            df = df[["h3_id", "mean_slope_deg", "max_slope_deg", "p95_slope_deg"]]
+            clean, rejected = validate_and_split(
+                df, contract, run_id=str(run.run_id), source="gee.slope"
+            )
+            stats["upserted"] += upsert_zonal(
+                df=clean,
+                table="raster_zonal_slope",
+                resolution=resolution,
+                run_id=str(run.run_id),
+                columns=["mean_slope_deg", "max_slope_deg", "p95_slope_deg"],
+            )
+            stats["rejected"] += rejected
+
+        run_zonal_export(
             image=slope,
             reducer=reducer,
             band_names=["slope_deg"],
             resolution=resolution,
             export_name="slope_srtm",
             scale_m=scale,
+            on_chunk=_consume,
         )
-        # GEE reducer.combine(sharedInputs=True) on a single band returns
-        # property keys named by the reducer alone (mean / max / p95),
-        # not band-prefixed (slope_deg_mean / ...). Accept either form
-        # so the cache from older runs still loads cleanly.
-        rename_map = {
-            "mean": "mean_slope_deg",
-            "max": "max_slope_deg",
-            "p95": "p95_slope_deg",
-            "slope_deg_mean": "mean_slope_deg",
-            "slope_deg_max": "max_slope_deg",
-            "slope_deg_p95": "p95_slope_deg",
-        }
-        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
-        df = df[["h3_id", "mean_slope_deg", "max_slope_deg", "p95_slope_deg"]]
 
-        clean, rejected = validate_and_split(
-            df, contract, run_id=str(run.run_id), source="gee.slope"
-        )
-        n = upsert_zonal(
-            df=clean,
-            table="raster_zonal_slope",
-            resolution=resolution,
-            run_id=str(run.run_id),
-            columns=["mean_slope_deg", "max_slope_deg", "p95_slope_deg"],
-        )
-        run.row_count = n
-        run.rows_rejected = rejected
-        return n
+        run.row_count = stats["upserted"]
+        run.rows_rejected = stats["rejected"]
+        return stats["upserted"]

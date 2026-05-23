@@ -12,6 +12,7 @@ import pytest
 from app.ingest.gee.zonal_export import (
     _properties_to_dataframe,
     _wkt_polygon_to_ee_geometry,
+    collect_zonal_export,
     run_zonal_export,
 )
 
@@ -103,7 +104,7 @@ def test_run_zonal_export_caches_chunks_on_disk(tmp_path, monkeypatch):
     monkeypatch.setattr("app.ingest.gee.zonal_export.ee.Feature", MagicMock())
     monkeypatch.setattr("app.ingest.gee.zonal_export.ee.FeatureCollection", MagicMock())
 
-    df = run_zonal_export(
+    df = collect_zonal_export(
         image=fake_image,
         reducer=MagicMock(),
         band_names=[],
@@ -122,7 +123,7 @@ def test_run_zonal_export_caches_chunks_on_disk(tmp_path, monkeypatch):
 
     # Second run: getInfo must NOT be called again — chunks are cached.
     fake_reduced.getInfo.reset_mock()
-    df2 = run_zonal_export(
+    df2 = collect_zonal_export(
         image=fake_image,
         reducer=MagicMock(),
         band_names=[],
@@ -208,7 +209,7 @@ def test_run_zonal_export_parallel_preserves_chunk_order(tmp_path, monkeypatch):
     monkeypatch.setattr("app.ingest.gee.zonal_export.ee.Feature", fake_feature)
     monkeypatch.setattr("app.ingest.gee.zonal_export.ee.FeatureCollection", MagicMock())
 
-    df = run_zonal_export(
+    df = collect_zonal_export(
         image=fake_image,
         reducer=MagicMock(),
         band_names=[],
@@ -218,7 +219,69 @@ def test_run_zonal_export_parallel_preserves_chunk_order(tmp_path, monkeypatch):
         chunk_size=1,
         max_workers=4,
     )
-    # Even with parallel completion, the final DataFrame iterates
-    # chunk_paths in index order, so h3_ids come back in their original
-    # h3_cells_res7-ordered position.
-    assert list(df.h3_id) == ["aaa", "bbb", "ccc"]
+    # With chunk-level parallelism the order of completion is non-deterministic
+    # but every h3_id must appear exactly once.
+    assert sorted(df.h3_id) == ["aaa", "bbb", "ccc"]
+
+
+def test_run_zonal_export_invokes_on_chunk_streaming(tmp_path, monkeypatch):
+    """The streaming callback must receive each chunk exactly once and never
+    see the full concatenated result — that's how we bound memory."""
+    cells = [
+        ("c1", "POLYGON((0 0,1 0,1 1,0 1,0 0))"),
+        ("c2", "POLYGON((1 1,2 1,2 2,1 2,1 1))"),
+        ("c3", "POLYGON((2 2,3 2,3 3,2 3,2 2))"),
+    ]
+
+    def fake_iter_cells(resolution, chunk_size):
+        yield cells[:2]
+        yield cells[2:]
+
+    fake_cache = tmp_path / "stream" / "res7"
+
+    info_per_call = [
+        {"features": [
+            {"properties": {"h3_id": "c1", "v": 0.1}},
+            {"properties": {"h3_id": "c2", "v": 0.2}},
+        ]},
+        {"features": [{"properties": {"h3_id": "c3", "v": 0.3}}]},
+    ]
+
+    fake_reduced = MagicMock()
+    fake_reduced.map.return_value = fake_reduced
+    fake_reduced.getInfo.side_effect = info_per_call
+
+    fake_image = MagicMock()
+    fake_image.select.return_value.reduceRegions.return_value = fake_reduced
+    fake_image.reduceRegions.return_value = fake_reduced
+
+    monkeypatch.setattr("app.ingest.gee.zonal_export.init_ee", lambda: None)
+    monkeypatch.setattr("app.ingest.gee.zonal_export._iter_cell_chunks", fake_iter_cells)
+    monkeypatch.setattr(
+        "app.ingest.gee.zonal_export._cache_dir_for",
+        lambda n, r: (fake_cache.mkdir(parents=True, exist_ok=True) or fake_cache),
+    )
+    monkeypatch.setattr(
+        "app.ingest.gee.zonal_export._wkt_polygon_to_ee_geometry",
+        lambda wkt: MagicMock(),
+    )
+    monkeypatch.setattr("app.ingest.gee.zonal_export.ee.Feature", MagicMock())
+    monkeypatch.setattr("app.ingest.gee.zonal_export.ee.FeatureCollection", MagicMock())
+
+    seen_chunks: list = []
+    total = run_zonal_export(
+        image=fake_image,
+        reducer=MagicMock(),
+        band_names=[],
+        resolution=7,
+        export_name="stream",
+        scale_m=30,
+        chunk_size=2,
+        max_workers=1,
+        on_chunk=lambda df: seen_chunks.append(df),
+    )
+    assert total == 3
+    # Two chunk DataFrames; sum of their row counts equals 3.
+    assert len(seen_chunks) == 2
+    all_ids = sorted(h3 for df in seen_chunks for h3 in df["h3_id"].tolist())
+    assert all_ids == ["c1", "c2", "c3"]

@@ -39,28 +39,35 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
             .select("population")
             .rename("pop_total")
         )
-        df = run_zonal_export(
+
+        stats = {"upserted": 0, "rejected": 0}
+
+        def _consume(df) -> None:
+            df["pop_total"] = df["pop_total"].astype(float).fillna(0.0)
+            df["pop_density_per_km2"] = df["pop_total"] / cell_area_km2
+            df = df[["h3_id", "pop_total", "pop_density_per_km2"]]
+            clean, rejected = validate_and_split(
+                df, contract, run_id=str(run.run_id), source="gee.population"
+            )
+            stats["upserted"] += upsert_zonal(
+                df=clean,
+                table="raster_zonal_population",
+                resolution=resolution,
+                run_id=str(run.run_id),
+                columns=["pop_total", "pop_density_per_km2"],
+            )
+            stats["rejected"] += rejected
+
+        run_zonal_export(
             image=pop,
             reducer=ee.Reducer.sum().setOutputs(["pop_total"]),
             band_names=["pop_total"],
             resolution=resolution,
             export_name="pop_worldpop",
             scale_m=scale,
+            on_chunk=_consume,
         )
-        df["pop_total"] = df["pop_total"].astype(float).fillna(0.0)
-        df["pop_density_per_km2"] = df["pop_total"] / cell_area_km2
-        df = df[["h3_id", "pop_total", "pop_density_per_km2"]]
 
-        clean, rejected = validate_and_split(
-            df, contract, run_id=str(run.run_id), source="gee.population"
-        )
-        n = upsert_zonal(
-            df=clean,
-            table="raster_zonal_population",
-            resolution=resolution,
-            run_id=str(run.run_id),
-            columns=["pop_total", "pop_density_per_km2"],
-        )
-        run.row_count = n
-        run.rows_rejected = rejected
-        return n
+        run.row_count = stats["upserted"]
+        run.rows_rejected = stats["rejected"]
+        return stats["upserted"]

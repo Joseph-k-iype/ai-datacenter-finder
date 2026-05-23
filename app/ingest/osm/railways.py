@@ -30,10 +30,15 @@ def ingest_railways(*, fresh: bool = False) -> int:
     ) as run:
         truncate("raw_railways")
         raw = overpass.fetch(q)
-        rows = []
-        for r in overpass_ways_to_linestrings(raw.get("elements", [])):
-            rows.append({"osm_id": r["osm_id"], "wkt": r["wkt"]})
+        elements = raw.get("elements", [])
+        del raw
+        rows = [
+            {"osm_id": r["osm_id"], "wkt": r["wkt"]}
+            for r in overpass_ways_to_linestrings(elements)
+        ]
+        del elements
         df = pd.DataFrame(rows)
+        del rows
         clean, rejected = validate_and_split(
             df, contract, run_id=str(run.run_id), source="osm.railways"
         )

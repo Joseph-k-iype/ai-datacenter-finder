@@ -69,8 +69,6 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
         upstream_source=asset,
         schema_hash=schema_hash(contract),
     ) as run:
-        # Up-front asset check — ee.Image() is lazy so the legacy try/except
-        # around it never actually fired the ERA5 fallback.
         if asset_exists(asset):
             log.info("gee.solar.source", source="global_solar_atlas", asset=asset)
             pvout_img = ee.Image(asset).select(["pvout_specific"]).rename("pvout_kwh_per_kwp")
@@ -88,26 +86,32 @@ def ingest(resolution: int = 7, *, fresh: bool = False) -> int:
             )
             combined = _era5_fallback(cfg)
 
-        df = run_zonal_export(
+        stats = {"upserted": 0, "rejected": 0}
+
+        def _consume(df) -> None:
+            df = df[["h3_id", "pvout_kwh_per_kwp", "ghi_kwh_per_m2"]]
+            clean, rejected = validate_and_split(
+                df, contract, run_id=str(run.run_id), source="gee.solar"
+            )
+            stats["upserted"] += upsert_zonal(
+                df=clean,
+                table="raster_zonal_solar",
+                resolution=resolution,
+                run_id=str(run.run_id),
+                columns=["pvout_kwh_per_kwp", "ghi_kwh_per_m2"],
+            )
+            stats["rejected"] += rejected
+
+        run_zonal_export(
             image=combined,
             reducer=ee.Reducer.mean(),
             band_names=["pvout_kwh_per_kwp", "ghi_kwh_per_m2"],
             resolution=resolution,
             export_name="solar_pvout",
             scale_m=scale,
+            on_chunk=_consume,
         )
-        df = df[["h3_id", "pvout_kwh_per_kwp", "ghi_kwh_per_m2"]]
 
-        clean, rejected = validate_and_split(
-            df, contract, run_id=str(run.run_id), source="gee.solar"
-        )
-        n = upsert_zonal(
-            df=clean,
-            table="raster_zonal_solar",
-            resolution=resolution,
-            run_id=str(run.run_id),
-            columns=["pvout_kwh_per_kwp", "ghi_kwh_per_m2"],
-        )
-        run.row_count = n
-        run.rows_rejected = rejected
-        return n
+        run.row_count = stats["upserted"]
+        run.rows_rejected = stats["rejected"]
+        return stats["upserted"]

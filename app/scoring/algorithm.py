@@ -189,23 +189,25 @@ def score_cells(
         )
 
     # Bulk insert outside the open session — bulk_execute manages its own.
+    # itertuples() is ~10× cheaper than iterrows() and produces a stream of
+    # named-tuples — no per-row pandas Series allocation.
     target = f"scores_res{resolution}"
-    rows: list[dict] = []
-    for _, row in scored.iterrows():
-        breakdown = {
-            "sub_power": float(row.sub_power),
-            "sub_water": float(row.sub_water),
-            "sub_conn":  float(row.sub_conn),
-            "sub_solar": float(row.sub_solar),
-            "sub_clim":  float(row.sub_clim),
-            "sub_lat":   float(row.sub_lat),
-        }
-        rows.append({
-            "h3": row.h3_id,
+    rows: list[dict] = [
+        {
+            "h3": t.h3_id,
             "run_id": run_id,
-            "score": float(row.score),
-            "breakdown": json.dumps(breakdown),
-        })
+            "score": float(t.score),
+            "breakdown": json.dumps({
+                "sub_power": float(t.sub_power),
+                "sub_water": float(t.sub_water),
+                "sub_conn":  float(t.sub_conn),
+                "sub_solar": float(t.sub_solar),
+                "sub_clim":  float(t.sub_clim),
+                "sub_lat":   float(t.sub_lat),
+            }),
+        }
+        for t in scored.itertuples(index=False)
+    ]
     bulk_execute(
         f"""
         INSERT INTO dc_india.{target} (h3_id, score_run_id, score, breakdown)

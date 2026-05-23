@@ -68,8 +68,10 @@ def ingest_water(*, fresh: bool = False) -> int:
     ) as run:
         truncate("raw_water_bodies")
         raw = overpass.fetch(q)
+        elements = raw.get("elements", [])
+        del raw  # Free the parsed Overpass response — can be 100+ MB at pan-India scale.
         rows = []
-        for el in raw.get("elements", []):
+        for el in elements:
             parsed = _element_to_wkt(el)
             if not parsed:
                 continue
@@ -82,7 +84,9 @@ def ingest_water(*, fresh: bool = False) -> int:
                     "wkt": wkt_str,
                 }
             )
+        del elements
         df = pd.DataFrame(rows)
+        del rows
         clean, rejected = validate_and_split(
             df, contract, run_id=str(run.run_id), source="osm.water_bodies"
         )

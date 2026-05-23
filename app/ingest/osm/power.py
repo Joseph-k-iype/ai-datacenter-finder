@@ -87,8 +87,10 @@ def ingest_power(with_topology: bool = False, *, fresh: bool = False) -> int:
     ) as run:
         truncate("raw_power_lines")
         raw = overpass.fetch(line_q)
+        elements = raw.get("elements", [])
+        del raw
         rows: list[dict[str, Any]] = []
-        for r in overpass_ways_to_linestrings(raw.get("elements", [])):
+        for r in overpass_ways_to_linestrings(elements):
             tags = r["tags"]
             kv = _parse_voltage_kv(tags.get("voltage"))
             if kv is None or kv < min_kv:
@@ -119,8 +121,10 @@ def ingest_power(with_topology: bool = False, *, fresh: bool = False) -> int:
     ) as run:
         truncate("raw_substations")
         raw = overpass.fetch(sub_q)
+        elements = raw.get("elements", [])
+        del raw
         rows = []
-        for r in overpass_nodes_to_points(raw.get("elements", [])):
+        for r in overpass_nodes_to_points(elements):
             tags = r["tags"]
             kv = _parse_voltage_kv(tags.get("voltage"))
             rows.append(
