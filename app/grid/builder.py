@@ -121,8 +121,12 @@ def populate_drilldown_cells(score_run_id: str, top_n: int = 200) -> int:
                     LIMIT :top_n
                 ),
                 children AS (
-                    SELECT unnest(h3_cell_to_children(t.h3_id, 8)) AS h3_id
+                    -- h3_cell_to_children returns SETOF h3index, so we
+                    -- use it as a LATERAL set-returning function — no
+                    -- unnest() wrapper (there's no unnest(h3index) overload).
+                    SELECT ch AS h3_id
                     FROM top t
+                    CROSS JOIN LATERAL h3_cell_to_children(t.h3_id, 8) AS ch
                 )
                 INSERT INTO dc_india.h3_cells_res8
                   (h3_id, parent_7, parent_6, state_code, area_km2, geom)

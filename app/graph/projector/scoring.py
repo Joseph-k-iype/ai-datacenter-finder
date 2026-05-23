@@ -27,7 +27,7 @@ from sqlalchemy.exc import ProgrammingError
 
 from app.core.db import session_scope
 from app.core.logging import get_logger
-from app.graph.client import batched_write, default_batch_size, query
+from app.graph.client import default_batch_size, query
 from app.graph.schema import E, N
 
 log = get_logger("graph.projector.scoring")
@@ -209,7 +209,17 @@ def hook_after_scoring_run(score_run_id: str, resolution: int) -> dict[str, int]
     """Project a single scoring run + its scores into FalkorDB.
 
     Cheaper than ``project_scoring()`` because it filters on score_run_id.
+
+    **Preconditions for full projection:** the bulk graph rebuild
+    (``dc graph rebuild``) must have run at least once so ``Cell`` nodes
+    + range indexes exist. If they don't, the hook still upserts the
+    ``ScoringRun`` node but **skips the per-score upsert** and logs a
+    warning — without ``Cell`` nodes the score↔cell edges can't form
+    and without indexes each MERGE is O(N) which collapses into
+    an O(N²) batch (the hang you'd otherwise hit).
     """
+    from app.graph.client import ensure_indexes, query_rows
+
     counts: dict[str, int] = {"scoring_runs": 0, "scores": 0}
 
     with session_scope() as session:
@@ -228,6 +238,14 @@ def hook_after_scoring_run(score_run_id: str, resolution: int) -> dict[str, int]
         log.warning("graph.projector.scoring.hook.missing_run", sid=score_run_id)
         return counts
 
+    # Make sure range indexes on Score.score_key, Cell.h3_id, etc. exist —
+    # otherwise the per-batch MERGE devolves into an O(N) label scan and
+    # the loop hangs for hours on res-7 (~600k scores).
+    try:
+        ensure_indexes()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("graph.projector.scoring.hook.indexes_skipped", error=str(exc))
+
     r = run
     query(
         f"MERGE (sr:{N.SCORING_RUN} {{score_run_id: $sid}}) "
@@ -245,9 +263,56 @@ def hook_after_scoring_run(score_run_id: str, resolution: int) -> dict[str, int]
     )
     counts["scoring_runs"] = 1
 
-    # Reuse the bulk projector but scoped — pull only this run's scores.
+    # Short-circuit: without Cell nodes there's no point creating Score
+    # nodes — the edges (the whole reason to project scores) can't form.
+    # Run `dc graph rebuild --only cells` first to populate them.
+    try:
+        cell_count_rows = query_rows(f"MATCH (c:{N.CELL}) RETURN count(c) LIMIT 1")
+        cell_count = int(cell_count_rows[0][0]) if cell_count_rows else 0
+    except Exception as exc:  # noqa: BLE001
+        log.warning("graph.projector.scoring.hook.cell_probe_failed", error=str(exc))
+        cell_count = 0
+    if cell_count == 0:
+        log.warning(
+            "graph.projector.scoring.hook.skip_no_cells",
+            note=(
+                "FalkorDB has no Cell nodes — run `dc graph rebuild` "
+                "first. Skipping per-score projection."
+            ),
+            score_run_id=score_run_id,
+        )
+        return counts
+
+    # Stream rows from Postgres in BATCH-sized chunks. Within each
+    # batch we issue THREE simple queries — Score upsert, Cell edge,
+    # ScoringRun edge — instead of one giant MERGE-with-WITH-MATCH
+    # query. Each simple query benefits cleanly from the range
+    # indexes on Score.score_key / Cell.h3_id / ScoringRun.score_run_id.
+    score_upsert = (
+        f"UNWIND $rows AS r "
+        f"MERGE (s:{N.SCORE} {{score_key: r.score_key}}) "
+        f"SET s.h3_id = r.h3_id, s.score_run_id = r.score_run_id, "
+        f"    s.score = r.score, s.breakdown_json = r.breakdown_json, "
+        f"    s.resolution = r.resolution"
+    )
+    link_cell = (
+        f"UNWIND $rows AS r "
+        f"MATCH (s:{N.SCORE} {{score_key: r.score_key}}), "
+        f"      (c:{N.CELL} {{h3_id: r.h3_id}}) "
+        f"MERGE (s)-[:{E.DERIVED_FROM}]->(c) "
+        f"MERGE (c)-[hs:{E.HAS_SCORE}]->(s) "
+        f"SET hs.score_run_id = r.score_run_id"
+    )
+    link_run = (
+        f"UNWIND $rows AS r "
+        f"MATCH (s:{N.SCORE} {{score_key: r.score_key}}), "
+        f"      (sr:{N.SCORING_RUN} {{score_run_id: r.score_run_id}}) "
+        f"MERGE (s)-[:{E.USES_WEIGHTS}]->(sr)"
+    )
+
+    batch: list[dict] = []
     with session_scope() as session:
-        rows = session.execute(
+        result = session.execute(
             text(
                 f"""
                 SELECT h3_id::text, score_run_id, score, breakdown
@@ -256,46 +321,32 @@ def hook_after_scoring_run(score_run_id: str, resolution: int) -> dict[str, int]
                 """
             ),
             {"sid": score_run_id},
-        ).all()
-
-    if not rows:
-        return counts
-
-    inserts = []
-    for h3, srid, sc, bd in rows:
-        if not isinstance(bd, dict):
-            try:
-                bd = json.loads(bd) if bd else {}
-            except (ValueError, TypeError):
-                bd = {}
-        inserts.append(
-            {
+        ).yield_per(BATCH)
+        for h3, srid, sc, bd in result:
+            if not isinstance(bd, dict):
+                try:
+                    bd = json.loads(bd) if bd else {}
+                except (ValueError, TypeError):
+                    bd = {}
+            batch.append({
                 "score_key": f"{h3}::{srid}::res{resolution}",
                 "h3_id": h3,
                 "score_run_id": str(srid),
                 "score": float(sc),
                 "breakdown_json": json.dumps(bd, default=str),
                 "resolution": resolution,
-            }
-        )
+            })
+            if len(batch) >= BATCH:
+                query(score_upsert, {"rows": batch})
+                query(link_cell, {"rows": batch})
+                query(link_run, {"rows": batch})
+                counts["scores"] += len(batch)
+                batch = []
 
-    cypher = (
-        f"UNWIND $rows AS r "
-        f"MERGE (s:{N.SCORE} {{score_key: r.score_key}}) "
-        f"SET s.h3_id = r.h3_id, s.score_run_id = r.score_run_id, "
-        f"    s.score = r.score, s.breakdown_json = r.breakdown_json, "
-        f"    s.resolution = r.resolution "
-        f"WITH s, r "
-        f"MATCH (c:{N.CELL} {{h3_id: r.h3_id}}), "
-        f"      (sr:{N.SCORING_RUN} {{score_run_id: r.score_run_id}}) "
-        f"MERGE (s)-[:{E.DERIVED_FROM}]->(c) "
-        f"MERGE (s)-[:{E.USES_WEIGHTS}]->(sr) "
-        f"MERGE (c)-[hs:{E.HAS_SCORE}]->(s) "
-        f"SET hs.score_run_id = r.score_run_id"
-    )
-    with batched_write(N.SCORE, inserts, batch_size=BATCH) as chunks:
-        for chunk in chunks:
-            query(cypher, {"rows": chunk})
-            counts["scores"] += len(chunk)
+    if batch:
+        query(score_upsert, {"rows": batch})
+        query(link_cell, {"rows": batch})
+        query(link_run, {"rows": batch})
+        counts["scores"] += len(batch)
 
     return counts

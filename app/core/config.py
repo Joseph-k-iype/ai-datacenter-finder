@@ -55,9 +55,15 @@ class Settings(BaseSettings):
     falkordb_port: int = 6379
     falkordb_password: str | None = None
     falkordb_graph: str = "dc_india"
-    # Auto-sync the graph after each ingestion_run finishes (write-through).
-    # Disable for bulk backfills; rebuild explicitly with `dc graph rebuild`.
+    # Auto-sync the graph after each ingestion_run / scoring_run finishes
+    # (write-through). Disable for bulk backfills; rebuild explicitly with
+    # `dc graph rebuild`.
     falkordb_auto_sync: bool = True
+    # Hard wall-clock budget for the post-scoring graph sync. Postgres is
+    # source of truth so a slow / stuck graph must never block the CLI —
+    # we surface a warning at timeout and let the user run `dc graph rebuild`
+    # to repair drift on their own schedule.
+    falkordb_sync_timeout_seconds: int = 600
 
     @property
     def sqlalchemy_url(self) -> str:

@@ -218,16 +218,42 @@ def score_cells(
 
     log.info("scoring.complete", run_id=run_id, cells=len(scored))
 
-    # Auto-project this run to FalkorDB if enabled. Soft-fails so a graph
-    # outage never breaks scoring (the parity job + manual rebuild repair
-    # any drift).
+    # Auto-project this run to FalkorDB if enabled. Runs in a bounded-
+    # timeout worker so a hung graph (missing indexes, oversized batch,
+    # network stall) never blocks the CLI — Postgres is source of truth,
+    # FalkorDB is a derived view and can always be repaired later with
+    # `dc graph rebuild`.
     from app.core.config import get_settings
 
-    if get_settings().falkordb_auto_sync:
-        try:
-            from app.graph.projector.scoring import hook_after_scoring_run
+    settings = get_settings()
+    if settings.falkordb_auto_sync:
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FutTimeout
 
-            hook_after_scoring_run(str(run_id), resolution=resolution)
+        from app.graph.projector.scoring import hook_after_scoring_run
+
+        # ~10 min for ~600k scores in 5k batches × 3 simple indexed queries
+        # is generous; a graph that can't finish in that window almost
+        # certainly has a structural problem (no Cell nodes, no indexes,
+        # FalkorDB segfault loop) — we'd rather surface the warning and
+        # exit cleanly than block the user indefinitely.
+        timeout_s = float(settings.falkordb_sync_timeout_seconds)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(
+                    hook_after_scoring_run, str(run_id), resolution
+                )
+                fut.result(timeout=timeout_s)
+        except FutTimeout:
+            log.warning(
+                "scoring.graph_sync_timeout",
+                run_id=str(run_id),
+                timeout_seconds=timeout_s,
+                note=(
+                    "FalkorDB auto-sync exceeded the timeout. Postgres "
+                    "state is fine; run `dc graph rebuild` to repair."
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("scoring.graph_sync_skipped", error=str(exc))
 
