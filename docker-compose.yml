@@ -5,6 +5,12 @@ services:
       dockerfile: Dockerfile
     container_name: dc_postgis
     restart: unless-stopped
+    # Docker's default /dev/shm is 64 MB. Postgres uses /dev/shm for
+    # parallel workers' shared hash tables; the UI's 3-way join on the
+    # 600k-row scores/features/cells tables blows past 64 MB and surfaces
+    # as a misleading "DiskFull: could not resize shared memory segment".
+    # 2 GB is conservative — bump if you raise max_parallel_workers_per_gather.
+    shm_size: 2gb
     environment:
       POSTGRES_DB: ${PG_DB:-dc_india}
       POSTGRES_USER: ${PG_USER:-dc}

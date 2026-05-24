@@ -76,23 +76,33 @@ def load_score_map(
     run_id: str,
     state_code: str | None = None,
     min_score: float = 0.0,
+    limit: int | None = None,
 ) -> pd.DataFrame:
     """Return ``h3_id, state_code, score, lat, lon`` for the map layer.
 
     Always filters to ``is_excluded = FALSE`` so the choropleth shows
-    only viable cells. State + min-score filters narrow the payload
-    before it crosses the wire — at pan-India scale the unfiltered
-    result is ~300k rows / ~25 MB JSON.
+    only viable cells. State + min-score + limit filters narrow the
+    payload before it crosses the wire — at pan-India scale the
+    unfiltered result is ~300k rows / ~25 MB JSON.
+
+    Implementation note: lat/lon come straight from ``h3_cell_to_lat_lng``
+    on the cell_features table. We do NOT join ``h3_cells_res7`` and call
+    ``ST_Centroid(geom)`` — that 3-way join on 600k × 600k × 600k rows
+    forces Postgres into a parallel hash join that blows the container's
+    /dev/shm. The h3-pg function returns the canonical hex centroid
+    directly from the index value.
     """
+    # LATERAL evaluates h3_cell_to_lat_lng() once per row; field access on
+    # the postgres `point` type uses [0]=x=lon, [1]=y=lat.
     sql = """
         SELECT s.h3_id::text AS h3_id,
                c.state_code,
                s.score,
-               ST_Y(ST_Centroid(g.geom)) AS lat,
-               ST_X(ST_Centroid(g.geom)) AS lon
+               (pt.p)[0] AS lon,
+               (pt.p)[1] AS lat
         FROM dc_india.scores_res7 s
         JOIN dc_india.cell_features_res7 c ON c.h3_id = s.h3_id
-        JOIN dc_india.h3_cells_res7      g ON g.h3_id = s.h3_id
+        CROSS JOIN LATERAL (SELECT h3_cell_to_lat_lng(s.h3_id) AS p) pt
         WHERE s.score_run_id = :run_id
           AND c.is_excluded = FALSE
           AND s.score >= :min_score
@@ -101,11 +111,15 @@ def load_score_map(
     if state_code:
         sql += " AND c.state_code = :state"
         params["state"] = state_code
+    sql += " ORDER BY s.score DESC"
+    if limit is not None:
+        sql += " LIMIT :limit"
+        params["limit"] = int(limit)
 
     with session_scope() as session:
         rows = session.execute(text(sql), params).all()
     return pd.DataFrame(
-        rows, columns=["h3_id", "state_code", "score", "lat", "lon"]
+        rows, columns=["h3_id", "state_code", "score", "lon", "lat"]
     )
 
 

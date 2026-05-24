@@ -147,6 +147,15 @@ with st.sidebar:
         3, 20, 5,
         help="Diversity-aware: callouts are ≥50 km apart.",
     )
+    max_hexes = st.slider(
+        "Max hexagons to render",
+        5_000, 100_000, 30_000, 5_000,
+        help=(
+            "Browsers choke past ~100k H3 cells. The map keeps the highest-"
+            "scoring N hexes under the filters. Raise the minimum-score "
+            "slider to see specific bands at full pan-India scale."
+        ),
+    )
     show_hv = st.checkbox("Overlay HV transmission grid", value=False)
 
 
@@ -173,8 +182,22 @@ st.divider()
 # ---------------------------------------------------------------------------
 # Map + top-sites panel
 # ---------------------------------------------------------------------------
-hex_df = load_score_map(run_id, state_code=state_code, min_score=min_score)
-top_df = load_top_sites(run_id, state_code=state_code)
+try:
+    hex_df = load_score_map(
+        run_id, state_code=state_code, min_score=min_score, limit=max_hexes,
+    )
+    top_df = load_top_sites(run_id, state_code=state_code)
+except Exception as exc:  # noqa: BLE001 — render the DB error as a banner, never a stack trace
+    st.error(
+        f"Query failed: `{type(exc).__name__}: {exc}`\n\n"
+        "If the message mentions `/dev/shm` or `DiskFull`, bump the "
+        "Postgres container's shared memory (already set to 2 GB in "
+        "`docker-compose.yml` — `docker compose up -d --force-recreate "
+        "postgis` to apply).",
+        icon="🛑",
+    )
+    st.stop()
+
 if not top_df.empty:
     top_df = top_df.sort_values("score", ascending=False).head(top_n).reset_index(drop=True)
 
@@ -326,16 +349,18 @@ with side_col:
     if top_df.empty:
         st.info("No top sites for this filter.")
     else:
+        # Use bracket access throughout — `row.rank` resolves to the
+        # pandas Series method `Series.rank` rather than the "rank" column.
         for _, row in top_df.iterrows():
-            reason = reasoning_sentence(row.score, row.breakdown_json)
+            reason = reasoning_sentence(row["score"], row["breakdown_json"])
             st.markdown(
                 f"""
                 <div class="site-card">
-                  <div class="site-rank">#{int(row.rank)}  ·  {row.state_code}</div>
-                  <div class="site-score">{row.score:.3f}</div>
+                  <div class="site-rank">#{int(row["rank"])}  ·  {row["state_code"]}</div>
+                  <div class="site-score">{row["score"]:.3f}</div>
                   <div class="site-reason">{reason}</div>
                   <div style="color:#6e7691;font-size:.75rem;margin-top:4px;">
-                    {row.h3_id}  ·  {row.lat:.3f}°N {row.lon:.3f}°E
+                    {row["h3_id"]}  ·  {row["lat"]:.3f}°N {row["lon"]:.3f}°E
                   </div>
                 </div>
                 """,
